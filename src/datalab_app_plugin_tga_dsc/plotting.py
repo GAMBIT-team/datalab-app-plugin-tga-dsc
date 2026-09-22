@@ -1,6 +1,8 @@
+# This file was edited with the assistance of an AI model and requires human review from the contributor.
 """Linked two-panel Bokeh layout for thermal analysis data."""
 
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 import pandas as pd
 from bokeh.events import DoubleTap

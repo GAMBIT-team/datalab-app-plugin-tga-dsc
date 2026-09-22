@@ -1,4 +1,3 @@
-<!-- This file was edited with the assistance of an AI model and requires human review from the contributor. -->
 # <div align="center"><i>datalab-app-plugin-tga-dsc</i></div>
 
 <div align="center">
