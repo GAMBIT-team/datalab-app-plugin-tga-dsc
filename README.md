@@ -11,6 +11,50 @@ visualising simultaneous thermogravimetric analysis and differential scanning
 calorimetry data. The block was originally developed by Jamie Neilson in the
 [*datalab* in-situ plugin](https://github.com/jrneilson/datalab-app-plugin-insitu/tree/feature/tga-insitu).
 
+## Installation
+
+This is intended to be installed into a working production or development *datalab* environment. 
+
+To install the current version of this plugin from the main branch, add the following to your `plugins.toml` in the main 
+datalab directory (if `plugins.toml` doesn't exist, create it first):
+
+```toml
+dependencies = [
+    "datalab-app-plugin-tga-dsc",
+]
+
+[tool.uv.sources]
+datalab-app-plugin-tga-dsc= { git = "https://github.com/GAMBIT-team/datalab-app-plugin-tga-dsc.git" }
+
+```
+
+Then run:
+`uv run invoke dev.install`
+
+
+
+## Dev Installation
+To install for development, navigate to your 
+plugins folder (`/pydatalab/plugins`) and clone this repo there. 
+
+add the following
+to `plugins.toml` in your base datalab directory:
+
+```toml
+dependencies = [
+    "datalab-app-plugin-tga-dsc",
+]
+
+[tool.uv.sources]
+datalab-app-plugin-tga-dsc = { path = "pydatalab/plugins/tga-dsc", editable = true }
+
+```
+
+Then run: 
+`uv run invoke dev.install`
+
+More info on plugin development can be found at: https://docs.datalab-org.io/en/stable/plugins/#installing-plugins
+
 ## Input format
 
 Upload the instrument's `.txt` ASCII export directly. It must contain two
