@@ -1,0 +1,14 @@
+# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY
+_commit: v0.2.2
+_src_path: git@github.com:datalab-org/datalab-app-plugin-template
+author_email: jdbocarsly@gmail.com
+author_fullname: Joshua Bocarsly
+copyright_date: '2026'
+copyright_holder: James Neilson
+copyright_holder_email: james.neilson@colostate.edu
+package_name: datalab_app_plugin_tga_dsc
+project_name: datalab-app-plugin-tga-dsc
+repository_name: datalab-app-plugin-tga-dsc
+repository_namespace: GAMBIT-team
+short_description: TGA and DSC data
+
