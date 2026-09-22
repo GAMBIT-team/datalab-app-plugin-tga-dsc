@@ -87,8 +87,11 @@ class TGAInsituBlock(DataBlock):
 
         data_granularity = self.data.get("data_granularity") or self.defaults["data_granularity"]
         if not data_granularity:
-            target = self.data.get("target_data_number") or self.defaults["target_data_number"]
+            target = int(
+                self.data.get("target_data_number") or self.defaults["target_data_number"] or 5000
+            )
             data_granularity = max(1, len(df) // target)
+        data_granularity = int(data_granularity)
         self.data["data_granularity"] = data_granularity
 
         return df.iloc[::data_granularity]
