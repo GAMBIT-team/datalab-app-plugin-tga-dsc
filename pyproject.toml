@@ -8,7 +8,10 @@ description = "TGA and DSC data"
 readme = "README.md"
 keywords = []
 license = { text = "MIT" }
-authors = [{ name = "Joshua Bocarsly", email = "jdbocarsly@gmail.com" }]
+authors = [
+    { name = "Joshua Bocarsly", email = "jdbocarsly@gmail.com" },
+    { name = "Jamie Neilson" },
+]
 dynamic = ["version"]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -24,7 +27,12 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+    "bokeh >= 2.4",
+    "numpy >= 1.26.4, < 2",
+    "pandas >= 2.2.3",
+    "scipy >= 1.14.1",
+]
 
 [project.urls]
 homepage = "https://GAMBIT-team.github.io/datalab-app-plugin-tga-dsc/"
@@ -32,9 +40,8 @@ repository = "https://github.com/GAMBIT-team/datalab-app-plugin-tga-dsc"
 documentation = "https://GAMBIT-team.github.io/datalab-app-plugin-tga-dsc/"
 changelog = "https://github.com/GAMBIT-team/datalab-app-plugin-tga-dsc/CHANGELOG.md"
 
-# Edit this entry point with any block classes implemented in this plugin
 [project.entry-points.'pydatalab.apps.plugins']
-example = "datalab_app_plugin_tga_dsc.blocks:ExampleDataBlock"
+tga_dsc = "datalab_app_plugin_tga_dsc:TGAInsituBlock"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -1,45 +1,103 @@
-"""An example block that loads a file, generates a fake plot
-and stores some data in the database.
+"""The datalab block for simultaneous TGA/DSC measurements."""
 
-TODO for plugin authors:
-
-    1. Replace this class implementation with your own.
-    2. Update the entrypoint in pyproject.toml to point to this class.
-
-"""
-
+import warnings
 from pathlib import Path
 
-from pydatalab.blocks.base import DataBlock
+import bokeh.embed
+from pydatalab.blocks.base import DataBlock, event, generate_js_callback_single_float_parameter
 
 from datalab_app_plugin_tga_dsc._version import __version__
+from datalab_app_plugin_tga_dsc.plotting import create_linked_tga_plots
+from datalab_app_plugin_tga_dsc.utils import (
+    HEAT_Y_OPTIONS,
+    MASS_Y_OPTIONS,
+    X_OPTIONS,
+    add_derived_columns,
+    parse_sta_ascii,
+)
 
 
-class ExampleDataBlock(DataBlock):
+class TGAInsituBlock(DataBlock):
+    """Process simultaneous thermal analysis (TGA/DSC) data.
+
+    The block reads a single ASCII export recorded continuously through a
+    temperature programme. The file is expected to have two header rows
+    (column names, then units), six data columns, and an optional footer giving
+    the sample name and export timestamp.
+
+    Mass is normalised against an initial mass, which defaults to the first
+    balance reading and can be overridden in the plot. No baseline or buoyancy
+    correction is applied.
+    """
+
     version = __version__
-    blocktype: str = "example"
-    name: str = "Example Block"
-    description: str = "An example block from the plugin template. All of this information should be rewritten by plugin authors."
+    blocktype = "insitu-tga"
+    name = "TGA/DSC"
+    description = __doc__
     accepted_file_extensions = (".txt",)
+    _prefers_async = False
+
+    defaults = {
+        "m0": None,
+        "target_data_number": 5000,
+        "data_granularity": None,
+    }
 
     @property
     def plot_functions(self):
-        return (self.plot_fake_scatter,)
+        """Return the plot generator used by datalab."""
+        return (lambda: self._plot_function(),)
 
-    def plot_fake_scatter(self, filename: str | Path | None = None):
-        """Creates a fake scatter plot and stores it in the database, using any provided
-        filename or attached data as the plot title.
+    @event()
+    def set_m0(self, m0: float | str | None):
+        """Set the initial sample mass, in mg, used to normalise the mass axis.
 
-        Parameters:
-            filename: The name of the file to use as the plot title.
-                If None, it will attempt to retrieve the file information from the database
-                using the `file_id` stored in `self.data`.
-
+        Passing ``None`` or an empty value restores the default, which is the
+        first balance reading in the file.
         """
-        import bokeh.embed
-        from bokeh.plotting import figure
+        if isinstance(m0, str):
+            m0 = m0.strip()
+            if not m0:
+                m0 = None
+            else:
+                try:
+                    m0 = float(m0)
+                except ValueError:
+                    raise ValueError(f"Invalid value for m0: {m0}. Must be a number.")
 
-        if not filename:
+        if m0 is not None and m0 <= 0:
+            raise ValueError("Initial mass must be a positive number")
+
+        self.data["m0"] = m0
+
+    def _plot_function(self, file_path=None, link_plots=True):
+        return self.generate_insitu_tga_plot(file_path=file_path, link_plots=link_plots)
+
+    def process_and_store_data(self, file_path: str | Path):
+        """Parse the export, derive plotting columns, and subsample its rows."""
+        df = parse_sta_ascii(file_path)
+
+        m0 = self.data.get("m0")
+        if m0 in (None, ""):
+            m0 = float(df["Weight"].iloc[0])
+            self.data["m0"] = m0
+        m0 = float(m0)
+
+        df = add_derived_columns(df, m0=m0)
+
+        data_granularity = self.data.get("data_granularity") or self.defaults["data_granularity"]
+        if not data_granularity:
+            target = self.data.get("target_data_number") or self.defaults["target_data_number"]
+            data_granularity = max(1, len(df) // target)
+        self.data["data_granularity"] = data_granularity
+
+        return df.iloc[::data_granularity]
+
+    def generate_insitu_tga_plot(self, file_path: Path | None = None, link_plots: bool = True):
+        """Generate linked mass and heat-flow panels for an ASCII export."""
+        if not file_path:
+            if "file_id" not in self.data:
+                return
             try:
                 from pydatalab.file_utils import get_file_info_by_id
             except ImportError:
@@ -48,16 +106,41 @@ class ExampleDataBlock(DataBlock):
                 )
 
             file_info = get_file_info_by_id(self.data["file_id"], update_if_live=True)
-            filename = Path(file_info["location"])
+            file_path = Path(file_info["location"])
 
-        # prepare some data
-        x = [1, 2, 3, 4, 5]
-        y = [6, 7, 2, 4, 5]
+        if Path(file_path).suffix.lower() not in self.accepted_file_extensions:
+            raise ValueError(
+                f"Unsupported file extension (must be one of {self.accepted_file_extensions})"
+            )
 
-        # create a new plot with a title and axis labels
-        p = figure(title=file_info["name"], x_axis_label="x", y_axis_label="y")
+        df = self.process_and_store_data(file_path)
 
-        # add a line renderer with legend and line thickness
-        p.line(x, y, legend_label="Temp.", line_width=2)
+        for key in ("sample_name", "export_timestamp"):
+            if key in df.attrs:
+                self.data[key] = df.attrs[key]
 
-        self.data["bokeh_plot_data"] = bokeh.embed.json_item(p)
+        layout = create_linked_tga_plots(
+            df,
+            x_options=X_OPTIONS,
+            mass_y_options=MASS_Y_OPTIONS,
+            heat_y_options=HEAT_Y_OPTIONS,
+            x_default="t (min)",
+            parameters={
+                "m0": {
+                    "label": "Initial mass m₀ (mg)",
+                    "value": self.data["m0"],
+                    "event": generate_js_callback_single_float_parameter(
+                        "set_m0", "m0", self.block_id, throttled=False
+                    ),
+                }
+            },
+            link_plots=link_plots,
+        )
+
+        try:
+            from pydatalab.bokeh_plots import DATALAB_BOKEH_THEME
+        except ImportError:
+            warnings.warn("datalab-server not installed, using default bokeh theme")
+            DATALAB_BOKEH_THEME = None
+
+        self.data["bokeh_plot_data"] = bokeh.embed.json_item(layout, theme=DATALAB_BOKEH_THEME)
