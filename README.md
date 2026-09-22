@@ -13,10 +13,11 @@ calorimetry data. The block was originally developed by Jamie Neilson in the
 
 ## Installation
 
-This is intended to be installed into a working production or development *datalab* environment. 
+This is intended to be installed into a working production or development *datalab* environment.
 
-To install the current version of this plugin from the main branch, add the following to your `plugins.toml` in the main 
-datalab directory (if `plugins.toml` doesn't exist, create it first):
+To install the current version of this plugin from the default branch, add the following
+to `plugins.toml` in the root of the *datalab* repository (alongside `pydatalab/` and
+`webapp/`). If `plugins.toml` does not exist, create it first:
 
 ```toml
 dependencies = [
@@ -24,21 +25,29 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-datalab-app-plugin-tga-dsc= { git = "https://github.com/GAMBIT-team/datalab-app-plugin-tga-dsc.git" }
-
+datalab-app-plugin-tga-dsc = { git = "https://github.com/GAMBIT-team/datalab-app-plugin-tga-dsc.git" }
 ```
 
-Then run:
-`uv run invoke dev.install`
+Omitting a Git ref installs the default branch. For a reproducible deployment, add a
+`tag` or `rev` to pin a release or commit.
 
+Then run the installer from the `pydatalab/` directory:
 
+```shell
+cd pydatalab
+uv run invoke dev.install
+```
 
-## Dev Installation
-To install for development, navigate to your 
-plugins folder (`/pydatalab/plugins`) and clone this repo there. 
+## Development installation
 
-add the following
-to `plugins.toml` in your base datalab directory:
+To install for development, clone this repository into the path expected by the
+configuration below. From the root of the *datalab* repository, run:
+
+```shell
+git clone https://github.com/GAMBIT-team/datalab-app-plugin-tga-dsc.git pydatalab/plugins/tga-dsc
+```
+
+Then add the following to `plugins.toml` in the root of the *datalab* repository:
 
 ```toml
 dependencies = [
@@ -47,11 +56,14 @@ dependencies = [
 
 [tool.uv.sources]
 datalab-app-plugin-tga-dsc = { path = "pydatalab/plugins/tga-dsc", editable = true }
-
 ```
 
-Then run: 
-`uv run invoke dev.install`
+Run the installer from the `pydatalab/` directory:
+
+```shell
+cd pydatalab
+uv run invoke dev.install
+```
 
 More info on plugin development can be found at: https://docs.datalab-org.io/en/stable/plugins/#installing-plugins
 
