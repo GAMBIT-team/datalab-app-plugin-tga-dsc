@@ -77,8 +77,12 @@ contain the sample name and export timestamp.
 The block displays linked mass and heat-flow plots. Axes are switched by
 clicking their labels: elapsed time or sample/reference temperature for the
 x-axis (shared by both panels), mass/relative mass/DTG for the upper y-axis, and
-absolute or mass-normalised heat flow for the lower y-axis. The initial mass
-used for normalisation can be edited on the plot.
+absolute or mass-normalised heat flow for the lower y-axis. The upper panel has
+a secondary y-axis on the right for showing a second trace alongside the first,
+such as mass and DTG, or mass and heat flow; it offers every mass and heat-flow
+option, is off until picked from that axis label, and the two labels are tinted
+to match their traces while it is on. The initial mass used
+for normalisation can be edited on the plot.
 
 Mass values are not baseline- or buoyancy-corrected. DTG is calculated from a
 Savitzky–Golay-smoothed mass trace before the data are reduced for display.
