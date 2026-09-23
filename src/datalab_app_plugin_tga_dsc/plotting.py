@@ -297,11 +297,12 @@ def create_linked_tga_plots(
 
     source = ColumnDataSource(df[plotted])
 
+    # The upper panel shares the lower panel's x-axis, so it is left unlabelled
+    # and only the lower x-axis carries the label (and its menu).
     mass_figure = figure(
         sizing_mode="scale_width",
         aspect_ratio=2.5,
         tools=TOOLS,
-        x_axis_label=x_default + AXIS_MENU_MARKER,
         y_axis_label=mass_y_default + AXIS_MENU_MARKER,
     )
     heat_figure = figure(
@@ -335,7 +336,7 @@ def create_linked_tga_plots(
         mass_figure.add_tools(crosshair)
         heat_figure.add_tools(crosshair)
 
-    x_axes = [mass_figure.xaxis[0], heat_figure.xaxis[0]]
+    x_axes = [heat_figure.xaxis[0]]
     for fig, renderer, y_options in (
         (mass_figure, mass_line, mass_y_options),
         (heat_figure, heat_line, heat_y_options),
