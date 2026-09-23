@@ -74,10 +74,11 @@ header rows (column names and units), followed by the six whitespace-aligned
 columns `Index`, `Ts`, `t`, `HF`, `Weight`, and `Tr`. An optional final line can
 contain the sample name and export timestamp.
 
-The block displays linked mass and heat-flow plots. Users can select elapsed
-time or sample/reference temperature for the x-axis, mass/relative mass/DTG for
-the upper y-axis, and absolute or mass-normalised heat flow for the lower
-y-axis. The initial mass used for normalisation can be edited on the plot.
+The block displays linked mass and heat-flow plots. Axes are switched by
+clicking their labels: elapsed time or sample/reference temperature for the
+x-axis (shared by both panels), mass/relative mass/DTG for the upper y-axis, and
+absolute or mass-normalised heat flow for the lower y-axis. The initial mass
+used for normalisation can be edited on the plot.
 
 Mass values are not baseline- or buoyancy-corrected. DTG is calculated from a
 Savitzky–Golay-smoothed mass trace before the data are reduced for display.
