@@ -3,8 +3,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+from bokeh.models import CustomJS, GlyphRenderer, LinearAxis
 
 from datalab_app_plugin_tga_dsc import TGAInsituBlock, __version__
+from datalab_app_plugin_tga_dsc.plotting import (
+    AXIS_MENU_MARKER,
+    SECONDARY_OFF_LABEL,
+    create_linked_tga_plots,
+)
 from datalab_app_plugin_tga_dsc.utils import (
     HEAT_Y_OPTIONS,
     MASS_Y_OPTIONS,
@@ -108,3 +114,75 @@ def test_block_rejects_unknown_extension(tmp_path):
     block = TGAInsituBlock(item_id="test-tga-insitu")
     with pytest.raises(ValueError, match="Unsupported file extension"):
         block.generate_insitu_tga_plot(file_path=bad)
+
+
+@pytest.fixture
+def derived_df(raw_df):
+    return add_derived_columns(raw_df, m0=float(raw_df["Weight"].iloc[0]))
+
+
+def _axis_labels(layout):
+    return [model.axis_label for model in layout.references() if isinstance(model, LinearAxis)]
+
+
+def _renderers(layout):
+    return [model for model in layout.references() if isinstance(model, GlyphRenderer)]
+
+
+def test_secondary_axis_is_off_by_default(derived_df):
+    layout = create_linked_tga_plots(derived_df, X_OPTIONS, MASS_Y_OPTIONS, HEAT_Y_OPTIONS)
+
+    assert SECONDARY_OFF_LABEL + AXIS_MENU_MARKER in _axis_labels(layout)
+    assert [renderer.visible for renderer in _renderers(layout)].count(False) == 1
+
+
+def test_secondary_axis_can_start_on(derived_df):
+    layout = create_linked_tga_plots(
+        derived_df,
+        X_OPTIONS,
+        MASS_Y_OPTIONS,
+        HEAT_Y_OPTIONS,
+        secondary_y_default="DTG (%/min)",
+    )
+
+    renderers = _renderers(layout)
+    assert "DTG (%/min)" + AXIS_MENU_MARKER in _axis_labels(layout)
+    assert len(renderers) == 3
+    assert all(renderer.visible for renderer in renderers)
+
+
+def test_secondary_axis_accepts_heat_flow_options(derived_df):
+    """The secondary axis offers both panels' options, not just the mass ones."""
+    layout = create_linked_tga_plots(
+        derived_df,
+        X_OPTIONS,
+        MASS_Y_OPTIONS,
+        HEAT_Y_OPTIONS,
+        secondary_y_default="heat flow (mW/mg)",
+    )
+
+    assert "heat flow (mW/mg)" + AXIS_MENU_MARKER in _axis_labels(layout)
+
+
+def test_x_menu_drives_every_trace(derived_df):
+    """A trace left off the x menu would keep plotting against a stale column."""
+    layout = create_linked_tga_plots(derived_df, X_OPTIONS, MASS_Y_OPTIONS, HEAT_Y_OPTIONS)
+
+    driven = {
+        id(renderer)
+        for model in layout.references()
+        if isinstance(model, CustomJS) and "x_renderers" in model.args
+        for renderer in model.args["x_renderers"]
+    }
+    assert driven == {id(renderer) for renderer in _renderers(layout)}
+
+
+def test_secondary_axis_rejects_unknown_column(derived_df):
+    with pytest.raises(ValueError, match="not one of the y-axis options"):
+        create_linked_tga_plots(
+            derived_df,
+            X_OPTIONS,
+            MASS_Y_OPTIONS,
+            HEAT_Y_OPTIONS,
+            secondary_y_default="not a column",
+        )
