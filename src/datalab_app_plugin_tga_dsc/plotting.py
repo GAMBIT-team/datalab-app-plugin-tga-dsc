@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from typing import Any
 
 import pandas as pd
-from bokeh.events import DoubleTap, MouseLeave, MouseMove, Tap
+from bokeh.events import DoubleTap, MouseMove, Tap
 from bokeh.layouts import column, gridplot
 from bokeh.models import (
     ColumnDataSource,
@@ -17,7 +17,7 @@ from bokeh.models import (
 )
 from bokeh.plotting import figure
 
-__all__ = ("create_linked_tga_plots",)
+__all__ = ("attach_axis_menus", "create_linked_tga_plots")
 
 TOOLS = "pan, box_zoom, wheel_zoom, reset, save"
 
@@ -43,35 +43,53 @@ SECONDARY_OFF_LABEL = "+ trace"
 """Placeholder shown on the secondary axis while it is off, so that it can still
 be clicked to add a trace."""
 
-AXIS_MENU_SETUP = """
-  // Shared, page-wide state for the axis menus, installed on first use.
+_AXIS_MENU_LIBRARY = """
+  // Page-wide helper for the axis menus, defined once and shared by every plot.
   //
-  // Bokeh's own tap event is not used to open the menu: its tap gesture waits
-  // out the double-tap interval before firing, which makes clicking an axis
-  // feel sluggish. Instead the hovered axis is tracked from Bokeh's mouse move
-  // events, and a plain DOM `pointerdown` listener opens the menu immediately.
-  const state = (function () {
-    if (window._datalab_axis_menu != null) {
-      return window._datalab_axis_menu;
+  // `on_move` records which axis gutter the pointer is over and a plain DOM
+  // `pointerdown` listener opens the menu from that. Bokeh's own tap event is
+  // only a fallback for touch: its gesture waits out the double-tap interval
+  // before firing, which makes clicking an axis feel sluggish.
+  const menus = (function () {
+    if (window.__datalab_axis_menus != null) {
+      return window.__datalab_axis_menus;
     }
 
     const MARKER = " \\u25be";
     const MENU_ID = "datalab-axis-menu";
+    const CANVAS_CLASS = "bk-canvas-events";
+    const OFF_OPTION = "__OFF_OPTION__";
+    const OFF_LABEL = "__OFF_LABEL__";
+    const DEFAULT_COLOR = "__DEFAULT_COLOR__";
+    const MUTED_COLOR = "__MUTED_COLOR__";
+    const TRANSPARENT = "__TRANSPARENT__";
+    const TAP_FALLBACK_GUARD_MS = 750;
 
-    function close_menu() {
-      const existing = document.getElementById(MENU_ID);
-      if (existing == null) {
+    let menu = null; // the open menu: {el, dismissers}
+    let hovered = null; // the axis under the pointer: {target, canvas}
+    let canvas = null; // the plot canvas under the pointer, if any
+    let pointer = {x: 0, y: 0};
+    let opened_at = 0;
+
+    function close() {
+      if (menu == null) {
         return;
       }
-      for (const [target, type, handler] of existing._dismissers || []) {
-        target.removeEventListener(type, handler, true);
+      for (const [el, type, handler] of menu.dismissers) {
+        el.removeEventListener(type, handler, true);
       }
-      existing.remove();
+      menu.el.remove();
+      menu = null;
     }
 
-    function apply_option(target, option) {
+    function selected_option(target) {
+      const label = (target.axes[0].axis_label || "").replace(MARKER, "");
+      return target.secondary && label === OFF_LABEL ? OFF_OPTION : label;
+    }
+
+    function apply(target, option) {
       if (target.secondary) {
-        apply_secondary_option(target, option);
+        apply_secondary(target, option);
         return;
       }
       for (const renderer of target.renderers) {
@@ -83,12 +101,11 @@ AXIS_MENU_SETUP = """
       target.source.change.emit();
     }
 
-    // The secondary axis carries an extra trace that can be switched off. When
-    // off it keeps a muted placeholder label, so there is still something to
-    // click to bring a trace back; its ticks and axis line are hidden, and the
-    // primary axis label drops back to the default colour.
-    function apply_secondary_option(target, option) {
-      const off = option === target.off_option;
+    // The secondary trace can also be switched off. Off, its axis keeps a muted
+    // placeholder label so there is still something to click, but no ticks or
+    // axis line; on, both y-axis labels are tinted to match their traces.
+    function apply_secondary(target, option) {
+      const off = option === OFF_OPTION;
       const axis = target.axes[0];
       const primary = target.primary_axis;
 
@@ -99,32 +116,31 @@ AXIS_MENU_SETUP = """
         renderer.visible = !off;
       }
 
-      axis.axis_label = (off ? target.off_label : option) + MARKER;
-      axis.axis_label_text_color = off ? target.muted_color : target.color;
-      axis.major_label_text_color = off ? target.transparent : target.color;
+      axis.axis_label = (off ? OFF_LABEL : option) + MARKER;
+      axis.axis_label_text_color = off ? MUTED_COLOR : target.color;
+      axis.major_label_text_color = off ? TRANSPARENT : target.color;
       // Take the themed colours from the primary axis, which is never restyled.
       axis.major_tick_line_color = off ? null : primary.major_tick_line_color;
       axis.axis_line_color = off ? null : primary.axis_line_color;
-      primary.axis_label_text_color = off ? target.default_color : target.primary_color;
+      primary.axis_label_text_color = off ? DEFAULT_COLOR : target.primary_color;
 
       if (target.hover != null) {
-        target.hover.renderers = off ? target.hover_primary_only : target.hover_both;
+        target.hover.renderers = off ? target.hover_off : target.hover_on;
       }
       target.source.change.emit();
     }
 
-    function open_menu(target, pointer) {
-      close_menu();
+    function open(target, at) {
+      close();
 
-      let current = (target.axes[0].axis_label || "").replace(MARKER, "");
-      if (target.secondary && current === target.off_label) {
-        current = target.off_option;
-      }
-      const menu = document.createElement("div");
-      menu.id = MENU_ID;
-      menu.style.cssText = [
+      const current = selected_option(target);
+      const el = document.createElement("div");
+      el.id = MENU_ID;
+      el.setAttribute("role", "menu");
+      el.setAttribute("aria-label", "Axis options");
+      el.style.cssText = [
         "position: fixed",
-        "z-index: 9999",
+        "z-index: 10050",
         "min-width: 9em",
         "padding: 0.25em 0",
         "background: #fff",
@@ -135,14 +151,17 @@ AXIS_MENU_SETUP = """
         "font-family: inherit",
         "font-size: 0.9rem",
         "line-height: 1.5",
+        "user-select: none",
       ].join("; ");
 
       for (const option of target.options) {
         const item = document.createElement("div");
         item.textContent = option;
+        item.setAttribute("role", "menuitem");
         item.style.cssText = "padding: 0.2em 1.1em; cursor: pointer; white-space: nowrap;";
-        const selected = option === current;
-        if (selected) {
+        const is_current = option === current;
+        if (is_current) {
+          item.setAttribute("aria-current", "true");
           item.style.fontWeight = "600";
           item.style.background = "#e9ecef";
         }
@@ -150,216 +169,247 @@ AXIS_MENU_SETUP = """
           item.style.background = "#dbe7f5";
         });
         item.addEventListener("mouseleave", () => {
-          item.style.background = selected ? "#e9ecef" : "";
+          item.style.background = is_current ? "#e9ecef" : "";
         });
         item.addEventListener("click", () => {
-          close_menu();
-          apply_option(target, option);
+          close();
+          apply(target, option);
         });
-        menu.appendChild(item);
+        el.appendChild(item);
       }
 
-      document.body.appendChild(menu);
+      document.body.appendChild(el);
 
-      const bbox = menu.getBoundingClientRect();
-      const left = Math.min(pointer.x + 2, window.innerWidth - bbox.width - 8);
-      const top = Math.min(pointer.y + 2, window.innerHeight - bbox.height - 8);
-      menu.style.left = Math.max(8, left) + "px";
-      menu.style.top = Math.max(8, top) + "px";
+      const bbox = el.getBoundingClientRect();
+      const left = Math.min(at.x + 2, window.innerWidth - bbox.width - 8);
+      const top = Math.min(at.y + 2, window.innerHeight - bbox.height - 8);
+      el.style.left = Math.max(8, left) + "px";
+      el.style.top = Math.max(8, top) + "px";
 
       const dismiss = (ev) => {
-        if (ev.type === "pointerdown" && menu.contains(ev.target)) {
+        if (ev.type === "pointerdown" && el.contains(ev.target)) {
           return;
         }
         if (ev.type === "keydown" && ev.key !== "Escape") {
           return;
         }
-        close_menu();
+        close();
       };
-      menu._dismissers = [
-        [document, "pointerdown", dismiss],
-        [document, "keydown", dismiss],
-        [window, "scroll", dismiss],
-        [window, "resize", dismiss],
-      ];
+      menu = {
+        el: el,
+        dismissers: [
+          [document, "pointerdown", dismiss],
+          [document, "keydown", dismiss],
+          [window, "scroll", dismiss],
+          [window, "resize", dismiss],
+        ],
+      };
       // Defer, so the click that opened the menu does not immediately close it.
       setTimeout(() => {
-        for (const [el, type, handler] of menu._dismissers) {
-          el.addEventListener(type, handler, true);
+        if (menu != null && menu.el === el) {
+          for (const [target_el, type, handler] of menu.dismissers) {
+            target_el.addEventListener(type, handler, true);
+          }
         }
       }, 0);
     }
 
-    // Taps are delivered for the whole plot, including the axis gutters, with
-    // data coordinates extrapolated beyond the frame. A point left of the
-    // frame is therefore on the y axis, one right of it on the secondary y
-    // axis, and one below it on the x axis.
+    // Events are delivered for the whole plot, including the axis gutters, with
+    // data coordinates extrapolated beyond the frame. A point left of the frame
+    // is therefore on the y axis, one right of it on the secondary y axis, and
+    // one below it on the x axis. Reversed ranges are compared the same way
+    // round, so that the regions stay where they are drawn.
     function hit(plot, x, y) {
-      if (!isFinite(x) || !isFinite(y)) {
+      const xr = plot.x_range;
+      const yr = plot.y_range;
+      if (![x, y, xr.start, xr.end, yr.start, yr.end].every(Number.isFinite)) {
         return null;
       }
-      const on_y_axis = x < plot.x_range.start;
-      const on_y2_axis = x > plot.x_range.end;
-      const on_x_axis = y < plot.y_range.start;
-      if (on_x_axis) {
-        return on_y_axis || on_y2_axis ? null : "x";
+      const flipped_x = xr.start > xr.end;
+      const left_of = flipped_x ? x > xr.start : x < xr.start;
+      const right_of = flipped_x ? x < xr.end : x > xr.end;
+      const below = yr.start > yr.end ? y > yr.start : y < yr.start;
+      if (below) {
+        return left_of || right_of ? null : "x";
       }
-      if (on_y_axis) {
+      if (left_of) {
         return "y";
       }
-      if (on_y2_axis) {
+      if (right_of) {
         return "y2";
       }
       return null;
     }
 
-    const shared = {
-      target: null,
-      pointer: {x: 0, y: 0},
-      canvas: null,
-      opened_at: 0,
-      hit: hit,
-      open_menu: open_menu,
-      close_menu: close_menu,
-      // Bokeh resets the cursor on every move it handles, just before running
-      // these callbacks, so the hint is (re)applied from them rather than here.
-      set_cursor: function (hovering_axis) {
-        const el = shared.canvas;
-        if (el == null) {
-          return;
-        }
-        if (hovering_axis) {
-          el.style.cursor = "pointer";
-        } else if (el.style.cursor === "pointer") {
-          el.style.cursor = "";
-        }
-      },
-    };
+    // Returns null for a region this plot has no menu for, such as the
+    // right-hand gutter of a plot without a secondary axis.
+    function target_for(context, region) {
+      const common = {plot_id: context.plot.id, source: context.source};
+      if (region === "x") {
+        return {...common, ...context.x, dimension: "x"};
+      }
+      if (region === "y") {
+        return {...common, ...context.y, dimension: "y"};
+      }
+      if (region === "y2" && context.y2 != null) {
+        return {...common, ...context.y2, dimension: "y", secondary: true};
+      }
+      return null;
+    }
+
+    // Bokeh resets the cursor on every move it handles, just before running
+    // these callbacks, so the hint is reapplied from on_move rather than here.
+    function set_cursor(on_axis) {
+      if (canvas == null) {
+        return;
+      }
+      if (on_axis) {
+        canvas.style.cursor = "pointer";
+      } else if (canvas.style.cursor === "pointer") {
+        canvas.style.cursor = "";
+      }
+    }
+
+    function plot_canvas(node) {
+      return node instanceof Element && node.classList.contains(CANVAS_CLASS) ? node : null;
+    }
 
     document.addEventListener("pointermove", (ev) => {
-      shared.pointer = {x: ev.clientX, y: ev.clientY};
-      const el = ev.target;
-      if (el instanceof Element && el.classList.contains("bk-canvas-events")) {
-        shared.canvas = el;
+      pointer = {x: ev.clientX, y: ev.clientY};
+      canvas = plot_canvas(ev.target);
+      if (canvas == null) {
+        // The pointer has left every plot, so there is no axis to act on.
+        hovered = null;
       }
     }, true);
 
     document.addEventListener("pointerdown", (ev) => {
-      shared.pointer = {x: ev.clientX, y: ev.clientY};
-      const menu = document.getElementById(MENU_ID);
-      if (menu != null && menu.contains(ev.target)) {
+      pointer = {x: ev.clientX, y: ev.clientY};
+      if (menu != null && menu.el.contains(ev.target)) {
         return;
       }
-      if (shared.target == null) {
+      if (hovered == null) {
         return;
       }
-      shared.opened_at = performance.now();
-      open_menu(shared.target, shared.pointer);
+      // `hovered.canvas` is only null for the first move after load, before
+      // this listener existed; any plot canvas will do in that case.
+      const expected = hovered.canvas;
+      if (expected != null ? ev.target !== expected : plot_canvas(ev.target) == null) {
+        return;
+      }
+      opened_at = performance.now();
+      open(hovered.target, pointer);
     }, true);
 
-    window._datalab_axis_menu = shared;
-    return shared;
+    const api = {
+      on_move: function (context, event) {
+        const target = target_for(context, hit(context.plot, event.x, event.y));
+        if (target == null) {
+          if (hovered != null && hovered.target.plot_id === context.plot.id) {
+            hovered = null;
+          }
+          set_cursor(false);
+          return;
+        }
+        hovered = {target: target, canvas: canvas};
+        set_cursor(true);
+      },
+      on_tap: function (context, event) {
+        // Touch devices have no hover to track, so Bokeh's slower tap event is
+        // the fallback there; it is ignored when `pointerdown` has just opened
+        // a menu, which is the case for every pointer device.
+        if (performance.now() - opened_at < TAP_FALLBACK_GUARD_MS) {
+          return;
+        }
+        const target = target_for(context, hit(context.plot, event.x, event.y));
+        if (target == null) {
+          return;
+        }
+        opened_at = performance.now();
+        open(target, pointer);
+      },
+    };
+
+    window.__datalab_axis_menus = api;
+    return api;
   })();
 """
 
-AXIS_MENU_TARGET = """
-  // Returns null for a region this panel has no menu for, e.g. the right-hand
-  // gutter of a panel without a secondary axis.
-  function region_target(region) {
-    return region == null ? null : make_target(region);
-  }
+AXIS_MENU_LIBRARY = (
+    _AXIS_MENU_LIBRARY.replace("__OFF_OPTION__", SECONDARY_OFF_OPTION)
+    .replace("__OFF_LABEL__", SECONDARY_OFF_LABEL)
+    .replace("__DEFAULT_COLOR__", DEFAULT_LABEL_COLOR)
+    .replace("__MUTED_COLOR__", MUTED_LABEL_COLOR)
+    .replace("__TRANSPARENT__", TRANSPARENT)
+)
+"""The shared menu code, inlined into the callbacks that may run first."""
 
-  function make_target(region) {
-    if (region === "y") {
-      return {
-        plot_id: p.id,
-        dimension: "y",
-        options: y_options,
-        renderers: y_renderers,
-        axes: [y_axis],
-        source: source,
-      };
-    }
-    if (region === "y2") {
-      if (y2_axis == null) {
-        return null;
-      }
-      return {
-        plot_id: p.id,
-        dimension: "y",
-        secondary: true,
+AXIS_MENU_CONTEXT = """
+  function axis_context() {
+    return {
+      plot: p,
+      source: source,
+      x: {options: x_options, renderers: x_renderers, axes: x_axes},
+      y: {options: y_options, renderers: y_renderers, axes: [y_axis]},
+      y2: y2_axis == null ? null : {
         options: y2_options,
         renderers: y2_renderers,
         axes: [y2_axis],
-        primary_axis: y_axis,
-        source: source,
-        hover: hover,
-        hover_primary_only: y_renderers,
-        hover_both: y_renderers.concat(y2_renderers),
-        off_option: y2_off_option,
-        off_label: y2_off_label,
         color: y2_color,
+        primary_axis: y_axis,
         primary_color: y_color,
-        default_color: default_label_color,
-        muted_color: muted_label_color,
-        transparent: transparent_color,
-      };
-    }
-    return {
-      plot_id: p.id,
-      dimension: "x",
-      options: x_options,
-      renderers: x_renderers,
-      axes: x_axes,
-      source: source,
+        hover: hover,
+        hover_off: y_renderers,
+        hover_on: y_renderers.concat(y2_renderers),
+      },
     };
   }
 """
 
-AXIS_HOVER_CALLBACK = (
-    AXIS_MENU_SETUP
-    + AXIS_MENU_TARGET
-    + """
-  const target = region_target(state.hit(p, cb_obj.x, cb_obj.y));
-  if (target == null) {
-    if (state.target != null && state.target.plot_id === p.id) {
-      state.target = null;
-    }
-  } else {
-    state.target = target;
-  }
-  state.set_cursor(target != null);
-"""
+AXIS_MOVE_CALLBACK = (
+    AXIS_MENU_LIBRARY + AXIS_MENU_CONTEXT + "\n  menus.on_move(axis_context(), cb_obj);\n"
 )
-
-AXIS_LEAVE_CALLBACK = (
-    AXIS_MENU_SETUP
-    + """
-  if (state.target != null && state.target.plot_id === p.id) {
-    state.target = null;
-  }
-  state.set_cursor(false);
-"""
-)
-
 AXIS_TAP_CALLBACK = (
-    AXIS_MENU_SETUP
-    + AXIS_MENU_TARGET
-    + """
-  // Fallback for touch devices, which have no hover to track: Bokeh's tap
-  // gesture is slower, but only fires here if `pointerdown` did not already
-  // open the menu.
-  if (performance.now() - state.opened_at < 750) {
-    return;
-  }
-  const target = region_target(state.hit(p, cb_obj.x, cb_obj.y));
-  if (target == null) {
-    return;
-  }
-  state.opened_at = performance.now();
-  state.open_menu(target, state.pointer);
-"""
+    AXIS_MENU_LIBRARY + AXIS_MENU_CONTEXT + "\n  menus.on_tap(axis_context(), cb_obj);\n"
 )
+
+
+def attach_axis_menus(
+    fig,
+    source: ColumnDataSource,
+    x: dict[str, Any],
+    y: dict[str, Any],
+    y2: dict[str, Any] | None = None,
+    hover: HoverTool | None = None,
+) -> None:
+    """Make ``fig``'s axis labels open a menu of columns to plot.
+
+    Each of ``x``, ``y`` and ``y2`` describes one menu as a dict of the
+    selectable ``options``, the ``renderers`` whose field it sets, the ``axes``
+    it relabels, and optionally the ``color`` its trace is drawn in. Clicking
+    anywhere in an axis gutter opens that axis's menu.
+
+    ``y2`` is a secondary axis drawn on the right, which can also be switched
+    off; pass ``hover`` alongside it so that the tooltips follow it on and off.
+    """
+    args = dict(
+        p=fig,
+        source=source,
+        x_options=list(x["options"]),
+        x_renderers=list(x["renderers"]),
+        x_axes=list(x["axes"]),
+        y_options=list(y["options"]),
+        y_renderers=list(y["renderers"]),
+        y_axis=y["axes"][0],
+        y_color=y.get("color"),
+        y2_options=list(y2["options"]) if y2 else None,
+        y2_renderers=list(y2["renderers"]) if y2 else None,
+        y2_axis=y2["axes"][0] if y2 else None,
+        y2_color=y2.get("color") if y2 else None,
+        hover=hover,
+    )
+    fig.js_on_event(MouseMove, CustomJS(args=args, code=AXIS_MOVE_CALLBACK))
+    fig.js_on_event(Tap, CustomJS(args=args, code=AXIS_TAP_CALLBACK))
 
 
 def _style_secondary_axis(axis, primary_axis, active: bool) -> None:
@@ -487,39 +537,38 @@ def create_linked_tga_plots(
         mass_figure.add_tools(crosshair)
         heat_figure.add_tools(crosshair)
 
-    x_axes = [heat_figure.xaxis[0]]
-    for fig, renderer, y_options in (
-        (mass_figure, mass_line, mass_y_options),
-        (heat_figure, heat_line, heat_y_options),
-    ):
-        secondary = fig is mass_figure
-        menu_args = dict(
-            p=fig,
-            source=source,
-            x_options=list(x_options),
-            y_options=list(y_options),
-            # Every trace follows the x-axis, the secondary one included, or
-            # it would be left plotted against whichever column the x-axis
-            # held when it was last shown.
-            x_renderers=[mass_line, mass_line2, heat_line],
-            x_axes=x_axes,
-            y_renderers=[renderer],
-            y_axis=fig.yaxis[0],
-            y_color=MASS_COLOR if secondary else HEAT_COLOR,
-            y2_options=[*secondary_y_options, SECONDARY_OFF_OPTION] if secondary else None,
-            y2_renderers=[mass_line2] if secondary else None,
-            y2_axis=secondary_axis if secondary else None,
-            y2_color=SECONDARY_COLOR,
-            y2_off_option=SECONDARY_OFF_OPTION,
-            y2_off_label=SECONDARY_OFF_LABEL,
-            hover=hover_tools[fig],
-            default_label_color=DEFAULT_LABEL_COLOR,
-            muted_label_color=MUTED_LABEL_COLOR,
-            transparent_color=TRANSPARENT,
-        )
-        fig.js_on_event(MouseMove, CustomJS(args=menu_args, code=AXIS_HOVER_CALLBACK))
-        fig.js_on_event(Tap, CustomJS(args=menu_args, code=AXIS_TAP_CALLBACK))
-        fig.js_on_event(MouseLeave, CustomJS(args=dict(p=fig), code=AXIS_LEAVE_CALLBACK))
+    # Both x-axes are driven together, but only the labelled one is relabelled.
+    # Every trace follows it, the secondary one included, or it would be left
+    # plotted against whichever column the x-axis held when it was last shown.
+    shared_x = {
+        "options": x_options,
+        "renderers": [mass_line, mass_line2, heat_line],
+        "axes": [heat_figure.xaxis[0]],
+    }
+    attach_axis_menus(
+        mass_figure,
+        source,
+        x=shared_x,
+        y={
+            "options": mass_y_options,
+            "renderers": [mass_line],
+            "axes": [mass_figure.yaxis[0]],
+            "color": MASS_COLOR,
+        },
+        y2={
+            "options": [*secondary_y_options, SECONDARY_OFF_OPTION],
+            "renderers": [mass_line2],
+            "axes": [secondary_axis],
+            "color": SECONDARY_COLOR,
+        },
+        hover=hover_tools[mass_figure],
+    )
+    attach_axis_menus(
+        heat_figure,
+        source,
+        x=shared_x,
+        y={"options": heat_y_options, "renderers": [heat_line], "axes": [heat_figure.yaxis[0]]},
+    )
 
     widgets = []
     if parameters:
