@@ -44,7 +44,7 @@ To install for development, clone this repository into the path expected by the
 configuration below. From the root of the *datalab* repository, run:
 
 ```shell
-git clone https://github.com/GAMBIT-team/datalab-app-plugin-tga-dsc.git pydatalab/plugins/tga-dsc
+git clone https://github.com/GAMBIT-team/datalab-app-plugin-tga-dsc.git pydatalab/plugins/datalab-app-plugin-tga-dsc
 ```
 
 Then add the following to `plugins.toml` in the root of the *datalab* repository:
