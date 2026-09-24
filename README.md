@@ -55,7 +55,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-datalab-app-plugin-tga-dsc = { path = "pydatalab/plugins/tga-dsc", editable = true }
+datalab-app-plugin-tga-dsc = { path = "pydatalab/plugins/datalab-app-plugin-tga-dsc", editable = true }
 ```
 
 Run the installer from the `pydatalab/` directory:
