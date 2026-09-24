@@ -1,23 +1,27 @@
 """Linked two-panel Bokeh layout for thermal analysis data."""
 
+import hashlib
+import re
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, TypedDict
 
 import pandas as pd
 from bokeh.events import DoubleTap, MouseMove, Tap
 from bokeh.layouts import column, gridplot
 from bokeh.models import (
+    Axis,
     ColumnDataSource,
     CrosshairTool,
     CustomJS,
     DataRange1d,
+    GlyphRenderer,
     HoverTool,
     LinearAxis,
     TextInput,
 )
 from bokeh.plotting import figure
 
-__all__ = ("attach_axis_menus", "create_linked_tga_plots")
+__all__ = ("AxisMenu", "attach_axis_menus", "create_linked_tga_plots")
 
 TOOLS = "pan, box_zoom, wheel_zoom, reset, save"
 
@@ -51,8 +55,8 @@ _AXIS_MENU_LIBRARY = """
   // only a fallback for touch: its gesture waits out the double-tap interval
   // before firing, which makes clicking an axis feel sluggish.
   const menus = (function () {
-    if (window.__datalab_axis_menus != null) {
-      return window.__datalab_axis_menus;
+    if (window.__NAMESPACE__ != null) {
+      return window.__NAMESPACE__;
     }
 
     const MARKER = " \\u25be";
@@ -330,19 +334,29 @@ _AXIS_MENU_LIBRARY = """
       },
     };
 
-    window.__datalab_axis_menus = api;
+    window.__NAMESPACE__ = api;
     return api;
   })();
 """
 
-AXIS_MENU_LIBRARY = (
+_FILLED_LIBRARY = (
     _AXIS_MENU_LIBRARY.replace("__OFF_OPTION__", SECONDARY_OFF_OPTION)
     .replace("__OFF_LABEL__", SECONDARY_OFF_LABEL)
     .replace("__DEFAULT_COLOR__", DEFAULT_LABEL_COLOR)
     .replace("__MUTED_COLOR__", MUTED_LABEL_COLOR)
     .replace("__TRANSPARENT__", TRANSPARENT)
 )
+
+# Name the globals after a digest of the code behind them, so that a page left
+# open across an upgrade cannot serve one version's blocks from another's copy.
+AXIS_MENU_LIBRARY = _FILLED_LIBRARY.replace(
+    "__NAMESPACE__",
+    "datalab_axis_menus_" + hashlib.sha1(_FILLED_LIBRARY.encode()).hexdigest()[:8],
+)
 """The shared menu code, inlined into the callbacks that may run first."""
+
+if re.search(r"__[A-Z][A-Z_]*__", AXIS_MENU_LIBRARY):
+    raise RuntimeError("An axis menu placeholder was left unsubstituted")
 
 AXIS_MENU_CONTEXT = """
   function axis_context() {
@@ -374,12 +388,22 @@ AXIS_TAP_CALLBACK = (
 )
 
 
+class AxisMenu(TypedDict, total=False):
+    """One axis menu: the selectable ``options``, the ``renderers`` whose field
+    it sets, the ``axes`` it relabels, and the ``color`` of its trace."""
+
+    options: Sequence[str]
+    renderers: list[GlyphRenderer]
+    axes: list[Axis]
+    color: str
+
+
 def attach_axis_menus(
     fig,
     source: ColumnDataSource,
-    x: dict[str, Any],
-    y: dict[str, Any],
-    y2: dict[str, Any] | None = None,
+    x: AxisMenu,
+    y: AxisMenu,
+    y2: AxisMenu | None = None,
     hover: HoverTool | None = None,
 ) -> None:
     """Make ``fig``'s axis labels open a menu of columns to plot.
@@ -540,7 +564,7 @@ def create_linked_tga_plots(
     # Both x-axes are driven together, but only the labelled one is relabelled.
     # Every trace follows it, the secondary one included, or it would be left
     # plotted against whichever column the x-axis held when it was last shown.
-    shared_x = {
+    shared_x: AxisMenu = {
         "options": x_options,
         "renderers": [mass_line, mass_line2, heat_line],
         "axes": [heat_figure.xaxis[0]],
