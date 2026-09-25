@@ -1,11 +1,11 @@
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 import pytest
-from bokeh.models import CustomJS, GlyphRenderer, LinearAxis
+from bokeh.models import CustomJS, DataTable, GlyphRenderer, LinearAxis
 
 from datalab_app_plugin_tga_dsc import TGAInsituBlock, __version__
+from datalab_app_plugin_tga_dsc.parsers import parse_sta_ascii, parse_ta_universal_ascii
 from datalab_app_plugin_tga_dsc.plotting import (
     AXIS_MENU_MARKER,
     SECONDARY_OFF_LABEL,
@@ -14,18 +14,27 @@ from datalab_app_plugin_tga_dsc.plotting import (
 from datalab_app_plugin_tga_dsc.utils import (
     HEAT_Y_OPTIONS,
     MASS_Y_OPTIONS,
-    RAW_COLUMNS,
     X_OPTIONS,
     add_derived_columns,
-    parse_sta_ascii,
+    available_options,
 )
 
-EXAMPLE_FILE = Path(__file__).parent.parent / "example_data" / "tga" / "JCC-01-29-7eqNaNH2.txt"
+EXAMPLE_DIR = Path(__file__).parent.parent / "example_data" / "tga"
+EXAMPLE_FILE = EXAMPLE_DIR / "JCC-01-29-7eqNaNH2.txt"
+CURIE_FILE = EXAMPLE_DIR / "Fe-Curie T-August 2026.txt"
+"""A TGA run with a magnet under the pan, so the apparent mass steps at the
+Curie point of iron (770 °C). It has no heat flow."""
 
 
 @pytest.fixture
 def raw_df():
-    return parse_sta_ascii(EXAMPLE_FILE)
+    return parse_sta_ascii(EXAMPLE_FILE)[0]
+
+
+@pytest.fixture
+def curie_df():
+    raw, _ = parse_ta_universal_ascii(CURIE_FILE)
+    return add_derived_columns(raw, m0=float(raw["Weight"].iloc[0]))
 
 
 def test_version():
@@ -33,35 +42,16 @@ def test_version():
     assert TGAInsituBlock.version == __version__
 
 
-def test_parse_sta_ascii(raw_df):
-    assert list(raw_df.columns) == list(RAW_COLUMNS)
-    assert len(raw_df) == 23701
-    assert not raw_df.isnull().values.any()
-    assert all(pd.api.types.is_float_dtype(dtype) for dtype in raw_df.dtypes)
-
-    assert raw_df["Weight"].iloc[0] == pytest.approx(1.60001)
-    assert raw_df["Weight"].iloc[-1] == pytest.approx(-0.509667)
-    assert raw_df["t"].iloc[-1] == pytest.approx(23700.0)
-    assert raw_df["Tr"].max() == pytest.approx(1000.0)
-
-
-def test_parse_sta_ascii_metadata(raw_df):
-    assert raw_df.attrs["sample_name"] == "JCC-01-29-7eqNaNH2"
-    assert raw_df.attrs["export_timestamp"] == "09.06.2026 20:19:20"
-    assert raw_df.attrs["original_filename"] == "JCC-01-29-7eqNaNH2.txt"
-
-
-def test_parse_sta_ascii_missing_file():
-    with pytest.raises(RuntimeError, match="does not exist"):
-        parse_sta_ascii(EXAMPLE_FILE.parent / "no-such-file.txt")
-
-
 def test_add_derived_columns(raw_df):
     m0 = float(raw_df["Weight"].iloc[0])
     df = add_derived_columns(raw_df, m0=m0)
 
-    for column in (*X_OPTIONS, *MASS_Y_OPTIONS, *HEAT_Y_OPTIONS):
-        assert column in df.columns
+    # Every column but the instrument's own DTG, which this file lacks.
+    assert available_options(df, (*X_OPTIONS, *MASS_Y_OPTIONS, *HEAT_Y_OPTIONS)) == tuple(
+        column
+        for column in (*X_OPTIONS, *MASS_Y_OPTIONS, *HEAT_Y_OPTIONS)
+        if column != "DTG (%/°C)"
+    )
 
     assert df["mass (%)"].iloc[0] == pytest.approx(100.0)
     assert df["Δmass (%)"].iloc[0] == pytest.approx(0.0)
@@ -77,6 +67,15 @@ def test_add_derived_columns(raw_df):
     assert np.isfinite(df["DTG (%/min)"]).all()
 
 
+def test_add_derived_columns_without_heat_flow(curie_df):
+    assert available_options(curie_df, X_OPTIONS) == ("t (s)", "t (min)", "t (h)", "Ts (°C)")
+    assert available_options(curie_df, MASS_Y_OPTIONS) == MASS_Y_OPTIONS
+    assert available_options(curie_df, HEAT_Y_OPTIONS) == ()
+    # The step down at the Curie point, as a negative DTG.
+    peak = curie_df["DTG (%/°C)"].idxmin()
+    assert curie_df["Ts (°C)"][peak] == pytest.approx(773.0, abs=2.0)
+
+
 def test_add_derived_columns_rejects_zero_mass(raw_df):
     with pytest.raises(ValueError, match="non-zero"):
         add_derived_columns(raw_df, m0=0.0)
@@ -88,7 +87,22 @@ def test_block_generates_plot_and_metadata():
 
     assert block.data["bokeh_plot_data"] is not None
     assert block.data["m0"] == pytest.approx(1.60001)
-    assert block.data["sample_name"] == "JCC-01-29-7eqNaNH2"
+    assert block.data["metadata"]["sample_name"] == "JCC-01-29-7eqNaNH2"
+    assert block.data["metadata"]["export_timestamp"] == "09.06.2026 20:19:20"
+
+
+def test_block_plots_curie_file():
+    block = TGAInsituBlock(item_id="test-tga-insitu")
+    block.generate_insitu_tga_plot(file_path=CURIE_FILE)
+
+    assert block.data["bokeh_plot_data"] is not None
+    assert block.data["m0"] == pytest.approx(15.8394)
+
+    metadata = block.data["metadata"]
+    assert metadata["file_format"] == "ta_universal_ascii"
+    assert metadata["sample_mass_mg"] == pytest.approx(15.485)
+    assert metadata["measured_at"] == "2026-08-03T17:12:00"
+    assert metadata["gas1"] == "Argon 100mL/min"
 
 
 def test_block_subsamples_long_traces():
@@ -121,6 +135,12 @@ def derived_df(raw_df):
     return add_derived_columns(raw_df, m0=float(raw_df["Weight"].iloc[0]))
 
 
+def _options(df):
+    return tuple(
+        available_options(df, options) for options in (X_OPTIONS, MASS_Y_OPTIONS, HEAT_Y_OPTIONS)
+    )
+
+
 def _axis_labels(layout):
     return [model.axis_label for model in layout.references() if isinstance(model, LinearAxis)]
 
@@ -130,7 +150,7 @@ def _renderers(layout):
 
 
 def test_secondary_axis_is_off_by_default(derived_df):
-    layout = create_linked_tga_plots(derived_df, X_OPTIONS, MASS_Y_OPTIONS, HEAT_Y_OPTIONS)
+    layout = create_linked_tga_plots(derived_df, *_options(derived_df))
 
     assert SECONDARY_OFF_LABEL + AXIS_MENU_MARKER in _axis_labels(layout)
     assert [renderer.visible for renderer in _renderers(layout)].count(False) == 1
@@ -139,9 +159,7 @@ def test_secondary_axis_is_off_by_default(derived_df):
 def test_secondary_axis_can_start_on(derived_df):
     layout = create_linked_tga_plots(
         derived_df,
-        X_OPTIONS,
-        MASS_Y_OPTIONS,
-        HEAT_Y_OPTIONS,
+        *_options(derived_df),
         secondary_y_default="DTG (%/min)",
     )
 
@@ -155,9 +173,7 @@ def test_secondary_axis_accepts_heat_flow_options(derived_df):
     """The secondary axis offers both panels' options, not just the mass ones."""
     layout = create_linked_tga_plots(
         derived_df,
-        X_OPTIONS,
-        MASS_Y_OPTIONS,
-        HEAT_Y_OPTIONS,
+        *_options(derived_df),
         secondary_y_default="heat flow (mW/mg)",
     )
 
@@ -166,7 +182,7 @@ def test_secondary_axis_accepts_heat_flow_options(derived_df):
 
 def test_x_menu_drives_every_trace(derived_df):
     """A trace left off the x menu would keep plotting against a stale column."""
-    layout = create_linked_tga_plots(derived_df, X_OPTIONS, MASS_Y_OPTIONS, HEAT_Y_OPTIONS)
+    layout = create_linked_tga_plots(derived_df, *_options(derived_df))
 
     driven = {
         id(renderer)
@@ -181,8 +197,152 @@ def test_secondary_axis_rejects_unknown_column(derived_df):
     with pytest.raises(ValueError, match="not one of the y-axis options"):
         create_linked_tga_plots(
             derived_df,
-            X_OPTIONS,
-            MASS_Y_OPTIONS,
-            HEAT_Y_OPTIONS,
+            *_options(derived_df),
             secondary_y_default="not a column",
         )
+
+
+def test_no_heat_flow_gives_one_panel(curie_df):
+    layout = create_linked_tga_plots(
+        curie_df,
+        available_options(curie_df, X_OPTIONS),
+        available_options(curie_df, MASS_Y_OPTIONS),
+        (),
+        x_default="Ts (°C)",
+    )
+
+    renderers = _renderers(layout)
+    labels = _axis_labels(layout)
+    # The mass trace and the (hidden) secondary trace, but no heat flow.
+    assert len(renderers) == 2
+    assert not any("heat flow" in label for label in labels if label)
+    # With no lower panel, the upper panel carries the x-axis label.
+    assert "Ts (°C)" + AXIS_MENU_MARKER in labels
+
+
+def test_no_heat_flow_x_menu_drives_every_trace(curie_df):
+    layout = create_linked_tga_plots(
+        curie_df,
+        available_options(curie_df, X_OPTIONS),
+        available_options(curie_df, MASS_Y_OPTIONS),
+        (),
+    )
+
+    driven = {
+        id(renderer)
+        for model in layout.references()
+        if isinstance(model, CustomJS) and "x_renderers" in model.args
+        for renderer in model.args["x_renderers"]
+    }
+    assert driven == {id(renderer) for renderer in _renderers(layout)}
+
+
+def test_block_detects_transitions_into_computed():
+    block = TGAInsituBlock(item_id="test-tga-insitu")
+    block.generate_insitu_tga_plot(file_path=CURIE_FILE)
+
+    computed = block.data["computed"]
+    (transition,) = computed["transitions"]
+    assert transition["kind"] == "Curie"
+    assert transition["source"] == "auto"
+    assert computed["curie_temperature"] == pytest.approx(772.7, abs=0.1)
+
+
+def test_block_transition_edits_survive_replotting():
+    block = TGAInsituBlock(item_id="test-tga-insitu")
+    block.generate_insitu_tga_plot(file_path=CURIE_FILE)
+    (curie,) = block.data["computed"]["transitions"]
+
+    block.process_events(
+        {
+            "event_name": "set_transitions",
+            "block_id": block.block_id,
+            "transitions": [
+                {"id": curie["id"], "temperature": 770.0, "kind": "Curie", "comment": "moved"},
+                {"temperature": 650.0, "kind": "other", "comment": "added by hand"},
+            ],
+        }
+    )
+    assert "errors" not in block.data
+    block.generate_insitu_tga_plot(file_path=CURIE_FILE)
+
+    transitions = block.data["computed"]["transitions"]
+    assert [(t["temperature"], t["source"]) for t in transitions] == [
+        (650.0, "manual"),
+        (770.0, "manual"),
+    ]
+    assert block.data["computed"]["curie_temperature"] == 770.0
+
+
+def test_block_unmarking_curie_clears_curie_temperature():
+    block = TGAInsituBlock(item_id="test-tga-insitu")
+    block.generate_insitu_tga_plot(file_path=CURIE_FILE)
+    (curie,) = block.data["computed"]["transitions"]
+
+    block.set_transitions([{**curie, "kind": "decomposition"}])
+    assert "curie_temperature" not in block.data["computed"]
+
+
+def test_block_detect_again_keeps_edits():
+    block = TGAInsituBlock(item_id="test-tga-insitu")
+    block.generate_insitu_tga_plot(file_path=EXAMPLE_FILE)
+    first, *rest = block.data["computed"]["transitions"]
+
+    block.set_transitions([{**first, "comment": "keep me"}])
+    assert len(block.data["computed"]["transitions"]) == 1
+
+    block.detect_transitions()
+    block.generate_insitu_tga_plot(file_path=EXAMPLE_FILE)
+    transitions = block.data["computed"]["transitions"]
+    assert len(transitions) == len(rest) + 1
+    assert [t["comment"] for t in transitions if t["id"] == first["id"]] == ["keep me"]
+
+
+def test_block_redetects_for_a_new_file():
+    block = TGAInsituBlock(item_id="test-tga-insitu")
+    block.generate_insitu_tga_plot(file_path=CURIE_FILE)
+    block.generate_insitu_tga_plot(file_path=EXAMPLE_FILE)
+
+    computed = block.data["computed"]
+    assert computed["transitions_detected_for"] == EXAMPLE_FILE.name
+    assert "curie_temperature" not in computed
+    assert all(t["kind"] == "" for t in computed["transitions"])
+
+
+def _transitions(df):
+    from datalab_app_plugin_tga_dsc.transitions import detect_transitions
+
+    return detect_transitions(df, mentions_curie_point=True)
+
+
+def test_transition_markers_follow_the_axis_menus(derived_df):
+    transitions = _transitions(derived_df)
+    layout = create_linked_tga_plots(
+        derived_df, *_options(derived_df), transitions=transitions, dispatch="void detail;"
+    )
+
+    renderers = _renderers(layout)
+    # Each panel gets a marker and a label on top of its traces.
+    assert len(renderers) == 3 + 4
+    driven = {
+        id(renderer)
+        for model in layout.references()
+        if isinstance(model, CustomJS) and "x_renderers" in model.args
+        for renderer in model.args["x_renderers"]
+    }
+    assert driven == {id(renderer) for renderer in renderers}
+
+
+def test_transition_editor_needs_dispatch(curie_df):
+    transitions = _transitions(curie_df)
+    options = _options(curie_df)
+
+    with_editor = create_linked_tga_plots(
+        curie_df, *options, transitions=transitions, dispatch="void detail;"
+    )
+    without = create_linked_tga_plots(curie_df, *options, transitions=transitions)
+
+    assert any(isinstance(model, DataTable) for model in with_editor.references())
+    assert not any(isinstance(model, DataTable) for model in without.references())
+    # The markers are still drawn without the editor.
+    assert len(_renderers(without)) == 2 + 2

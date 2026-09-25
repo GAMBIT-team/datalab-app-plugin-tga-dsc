@@ -69,10 +69,20 @@ More info on plugin development can be found at: https://docs.datalab-org.io/en/
 
 ## Input format
 
-Upload the instrument's `.txt` ASCII export directly. It must contain two
-header rows (column names and units), followed by the six whitespace-aligned
-columns `Index`, `Ts`, `t`, `HF`, `Weight`, and `Tr`. An optional final line can
-contain the sample name and export timestamp.
+Upload the instrument's `.txt` ASCII export directly. Two formats are
+recognised:
+
+- Simultaneous TGA/DSC exports, with two header rows (column names and units)
+  followed by the six whitespace-aligned columns `Index`, `Ts`, `t`, `HF`,
+  `Weight`, and `Tr`. An optional final line can contain the sample name and
+  export timestamp.
+- TGA exports from TA Instruments' Universal Analysis, which start with a
+  header of `Key<tab>value` lines (`Sample`, `Size`, `Nsig`, `Sig1`, ...)
+  before the data.
+
+Whatever metadata the file has (sample name, mass, operator, date, gases, and
+so on) is stored with the block. Files without heat flow, like the TA TGA
+exports, are shown as a single mass panel.
 
 The block displays linked mass and heat-flow plots. Axes are switched by
 clicking their labels: elapsed time or sample/reference temperature for the
@@ -83,6 +93,22 @@ such as mass and DTG, or mass and heat flow; it offers every mass and heat-flow
 option, is off until picked from that axis label, and the two labels are tinted
 to match their traces while it is on. The initial mass used
 for normalisation can be edited on the plot.
+
+### Transitions
+
+When a file is first plotted, the block looks for transitions on heating: steps
+in the mass (placed at their inflection point) and peaks in the heat flow
+(placed at their top). Each is marked on the plot and listed in a table below
+it, where it can be given a kind (Curie, melting, decomposition, dehydration,
+...) and a free-text comment, or have its temperature changed. Transitions can
+also be deleted, added by clicking the plot, or detected again; detecting again
+keeps anything that has been edited by hand.
+
+Transitions are stored in the block's `computed` data, along with the
+temperature of any marked as a Curie point as `curie_temperature`. For magnetic
+TGA runs, where a magnet near the pan makes the apparent mass step at the Curie
+point, the largest mass step is marked as a Curie point automatically if the
+sample name, method or comment mentions one.
 
 Mass values are not baseline- or buoyancy-corrected. DTG is calculated from a
 Savitzky–Golay-smoothed mass trace before the data are reduced for display.

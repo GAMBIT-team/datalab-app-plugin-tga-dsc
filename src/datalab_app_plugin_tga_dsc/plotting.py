@@ -21,6 +21,14 @@ from bokeh.models import (
 )
 from bokeh.plotting import figure
 
+from datalab_app_plugin_tga_dsc.transition_plotting import (
+    TEMPERATURE_COLUMN,
+    add_transition_markers,
+    transition_editor,
+    transition_marker_source,
+)
+from datalab_app_plugin_tga_dsc.transitions import Transition
+
 __all__ = ("AxisMenu", "attach_axis_menus", "create_linked_tga_plots")
 
 TOOLS = "pan, box_zoom, wheel_zoom, reset, save"
@@ -91,6 +99,14 @@ _AXIS_MENU_LIBRARY = """
       return target.secondary && label === OFF_LABEL ? OFF_OPTION : label;
     }
 
+    // Renderers may draw from sources other than the traces' (the transition
+    // markers do), and each needs a nudge to redraw with its new field.
+    function redraw(renderers) {
+      for (const source of new Set(renderers.map((renderer) => renderer.data_source))) {
+        source.change.emit();
+      }
+    }
+
     function apply(target, option) {
       if (target.secondary) {
         apply_secondary(target, option);
@@ -102,7 +118,7 @@ _AXIS_MENU_LIBRARY = """
       for (const axis of target.axes) {
         axis.axis_label = option + MARKER;
       }
-      target.source.change.emit();
+      redraw(target.renderers);
     }
 
     // The secondary trace can also be switched off. Off, its axis keeps a muted
@@ -131,7 +147,7 @@ _AXIS_MENU_LIBRARY = """
       if (target.hover != null) {
         target.hover.renderers = off ? target.hover_off : target.hover_on;
       }
-      target.source.change.emit();
+      redraw(target.renderers);
     }
 
     function open(target, at) {
@@ -465,23 +481,32 @@ def create_linked_tga_plots(
     secondary_y_default: str | None = None,
     parameters: dict[str, dict[str, Any]] | None = None,
     link_plots: bool = True,
+    transitions: Sequence[Transition] | None = None,
+    dispatch: str | None = None,
 ):
     """Build two vertically stacked line panels that share an x-axis.
 
     The upper panel shows a mass-derived signal and the lower panel a heat-flow
-    signal. Axes are chosen by clicking their labels: clicking either x-axis
-    label drives both x-axes, and clicking a y-axis label changes that panel
-    only.
+    signal. Axes are chosen by clicking their labels: clicking the x-axis label
+    drives both x-axes, and clicking a y-axis label changes that panel only.
+
+    If ``heat_y_options`` is empty, as for a file with no heat flow, the lower
+    panel is left out and the upper panel carries the x-axis instead.
 
     The upper panel also carries a secondary y-axis on the right, for showing a
     second trace alongside the first (mass and DTG, say, or mass and heat flow).
     It offers every mass and heat-flow option, is off unless
     ``secondary_y_default`` names a column, and is switched on and off from its
     own axis label.
+
+    ``transitions`` are marked on the plot, heat-flow peaks on the lower panel
+    and everything else on the upper. Given ``dispatch``, JS that sends the
+    object ``detail`` as a block event, a table for editing them is added below.
+    Both need a temperature column among the x options.
     """
     x_default = x_default or x_options[0]
     mass_y_default = mass_y_default or mass_y_options[0]
-    heat_y_default = heat_y_default or heat_y_options[0]
+    has_heat = bool(heat_y_options)
     # The secondary trace may come from either panel's options.
     secondary_y_options = list(dict.fromkeys([*mass_y_options, *heat_y_options]))
     if secondary_y_default is not None and secondary_y_default not in secondary_y_options:
@@ -494,29 +519,34 @@ def create_linked_tga_plots(
 
     source = ColumnDataSource(df[plotted])
 
-    # The upper panel shares the lower panel's x-axis, so it is left unlabelled
-    # and only the lower x-axis carries the label (and its menu).
+    # With a lower panel, the upper panel shares its x-axis, so it is left
+    # unlabelled and only the lower x-axis carries the label (and its menu).
+    x_axis_label = x_default + AXIS_MENU_MARKER
     mass_figure = figure(
         sizing_mode="scale_width",
         aspect_ratio=2.5,
         tools=TOOLS,
+        x_axis_label=None if has_heat else x_axis_label,
         y_axis_label=mass_y_default + AXIS_MENU_MARKER,
     )
-    heat_figure = figure(
-        sizing_mode="scale_width",
-        aspect_ratio=2.5,
-        tools=TOOLS,
-        x_axis_label=x_default + AXIS_MENU_MARKER,
-        y_axis_label=heat_y_default + AXIS_MENU_MARKER,
-        x_range=mass_figure.x_range,
-    )
-
     mass_line = mass_figure.line(
         x=x_default, y=mass_y_default, source=source, line_width=2, color=MASS_COLOR
     )
-    heat_line = heat_figure.line(
-        x=x_default, y=heat_y_default, source=source, line_width=2, color=HEAT_COLOR
-    )
+
+    heat_figure = heat_line = None
+    if has_heat:
+        heat_y_default = heat_y_default or heat_y_options[0]
+        heat_figure = figure(
+            sizing_mode="scale_width",
+            aspect_ratio=2.5,
+            tools=TOOLS,
+            x_axis_label=x_axis_label,
+            y_axis_label=heat_y_default + AXIS_MENU_MARKER,
+            x_range=mass_figure.x_range,
+        )
+        heat_line = heat_figure.line(
+            x=x_default, y=heat_y_default, source=source, line_width=2, color=HEAT_COLOR
+        )
 
     # The secondary trace on the upper panel, with its own range and right-hand
     # axis. The range follows this trace alone, rather than everything drawn.
@@ -544,8 +574,37 @@ def create_linked_tga_plots(
     mass_figure.add_layout(secondary_axis, "right")
     _style_secondary_axis(secondary_axis, mass_figure.yaxis[0], active=secondary_active)
 
+    panels = [(mass_figure, [mass_line])]
+    if heat_figure is not None:
+        panels.append((heat_figure, [heat_line]))
+
+    # Transition markers follow the axis menus like the traces do, so their
+    # sources carry every column the menus can pick.
+    show_transitions = transitions is not None and TEMPERATURE_COLUMN in x_options
+    marker_sources: list[ColumnDataSource] = []
+    markers: dict[Any, list[GlyphRenderer]] = {mass_figure: [], heat_figure: []}
+    if show_transitions:
+        all_transitions = list(transitions or ())
+        placed = [(mass_figure, mass_y_default, all_transitions)]
+        if heat_figure is not None and heat_y_default is not None:
+            on_heat_panel = [t for t in all_transitions if t.signal == "heat flow"]
+            placed = [
+                (
+                    mass_figure,
+                    mass_y_default,
+                    [t for t in all_transitions if t not in on_heat_panel],
+                ),
+                (heat_figure, heat_y_default, on_heat_panel),
+            ]
+        for fig, y_field, panel_transitions in placed:
+            if not panel_transitions:
+                continue
+            marker_source = transition_marker_source(df, panel_transitions, plotted)
+            marker_sources.append(marker_source)
+            markers[fig] = add_transition_markers(fig, marker_source, x_default, y_field)
+
     hover_tools = {}
-    for fig, renderers in ((mass_figure, [mass_line]), (heat_figure, [heat_line])):
+    for fig, renderers in panels:
         hover_tools[fig] = HoverTool(
             renderers=[*renderers, mass_line2]
             if secondary_active and fig is mass_figure
@@ -556,7 +615,7 @@ def create_linked_tga_plots(
         fig.add_tools(hover_tools[fig])
         fig.js_on_event(DoubleTap, CustomJS(args=dict(p=fig), code="p.reset.emit()"))
 
-    if link_plots:
+    if link_plots and heat_figure is not None:
         crosshair = CrosshairTool(dimensions="height", line_color="grey")
         mass_figure.add_tools(crosshair)
         heat_figure.add_tools(crosshair)
@@ -564,10 +623,12 @@ def create_linked_tga_plots(
     # Both x-axes are driven together, but only the labelled one is relabelled.
     # Every trace follows it, the secondary one included, or it would be left
     # plotted against whichever column the x-axis held when it was last shown.
+    labelled_x_figure = heat_figure if heat_figure is not None else mass_figure
     shared_x: AxisMenu = {
         "options": x_options,
-        "renderers": [mass_line, mass_line2, heat_line],
-        "axes": [heat_figure.xaxis[0]],
+        "renderers": [renderer for _, renderers in panels for renderer in renderers]
+        + [mass_line2, *markers[mass_figure], *markers[heat_figure]],
+        "axes": [labelled_x_figure.xaxis[0]],
     }
     attach_axis_menus(
         mass_figure,
@@ -575,7 +636,7 @@ def create_linked_tga_plots(
         x=shared_x,
         y={
             "options": mass_y_options,
-            "renderers": [mass_line],
+            "renderers": [mass_line, *markers[mass_figure]],
             "axes": [mass_figure.yaxis[0]],
             "color": MASS_COLOR,
         },
@@ -587,12 +648,17 @@ def create_linked_tga_plots(
         },
         hover=hover_tools[mass_figure],
     )
-    attach_axis_menus(
-        heat_figure,
-        source,
-        x=shared_x,
-        y={"options": heat_y_options, "renderers": [heat_line], "axes": [heat_figure.yaxis[0]]},
-    )
+    if heat_figure is not None:
+        attach_axis_menus(
+            heat_figure,
+            source,
+            x=shared_x,
+            y={
+                "options": heat_y_options,
+                "renderers": [heat_line, *markers[heat_figure]],
+                "axes": [heat_figure.yaxis[0]],
+            },
+        )
 
     widgets = []
     if parameters:
@@ -602,10 +668,24 @@ def create_linked_tga_plots(
                 widget.js_on_change("value", CustomJS(code=parameter["event"]))
             widgets.append(widget)
 
-    grid = gridplot([[mass_figure], [heat_figure]], merge_tools=True, sizing_mode="scale_width")
+    grid = gridplot([[fig] for fig, _ in panels], merge_tools=True, sizing_mode="scale_width")
+
+    below = []
+    if show_transitions and dispatch is not None:
+        below.append(
+            transition_editor(
+                transitions or (),
+                source,
+                [fig for fig, _ in panels],
+                mass_line,
+                marker_sources,
+                dispatch,
+            )
+        )
 
     return column(
         *widgets,
         grid,
+        *below,
         sizing_mode="scale_width",
     )

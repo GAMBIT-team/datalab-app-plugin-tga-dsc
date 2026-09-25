@@ -7,13 +7,24 @@ import bokeh.embed
 from pydatalab.blocks.base import DataBlock, event, generate_js_callback_single_float_parameter
 
 from datalab_app_plugin_tga_dsc._version import __version__
+from datalab_app_plugin_tga_dsc.parsers import parse_thermal_file
 from datalab_app_plugin_tga_dsc.plotting import create_linked_tga_plots
+from datalab_app_plugin_tga_dsc.transitions import (
+    CURIE,
+    Transition,
+    apply_edits,
+    mentions_curie,
+    merge_detected,
+)
+from datalab_app_plugin_tga_dsc.transitions import (
+    detect_transitions as find_transitions,
+)
 from datalab_app_plugin_tga_dsc.utils import (
     HEAT_Y_OPTIONS,
     MASS_Y_OPTIONS,
     X_OPTIONS,
     add_derived_columns,
-    parse_sta_ascii,
+    available_options,
 )
 
 
@@ -21,13 +32,22 @@ class TGAInsituBlock(DataBlock):
     """Process simultaneous thermal analysis (TGA/DSC) data.
 
     The block reads a single ASCII export recorded continuously through a
-    temperature programme. The file is expected to have two header rows
-    (column names, then units), six data columns, and an optional footer giving
-    the sample name and export timestamp.
+    temperature programme. Two formats are supported: exports from a
+    simultaneous TGA/DSC, and TGA exports from TA Instruments' Universal
+    Analysis. Files without heat flow are shown as a single mass panel. Any
+    metadata in the file is stored with the block.
 
     Mass is normalised against an initial mass, which defaults to the first
     balance reading and can be overridden in the plot. No baseline or buoyancy
     correction is applied.
+
+    Transitions (mass steps and heat-flow peaks) are found on heating when a
+    file is first plotted, and can be edited in a table below the plot: moved,
+    deleted, added by clicking the plot, and given a kind and a comment. They
+    are stored under ``computed["transitions"]``, with the temperature of any
+    marked as a Curie point also under ``computed["curie_temperature"]``. If the
+    sample name, method or comment mentions a Curie point, the largest mass step
+    is marked as one automatically.
     """
 
     version = __version__
@@ -70,12 +90,61 @@ class TGAInsituBlock(DataBlock):
 
         self.data["m0"] = m0
 
+    @event()
+    def set_transitions(self, transitions: list[dict]):
+        """Replace the transitions with an edited list.
+
+        Each entry gives a ``temperature`` (°C), ``kind`` and ``comment``, and
+        the ``id`` of the transition it edits; entries without one are added,
+        and transitions left out are deleted.
+        """
+        self._store_transitions(apply_edits(self._transitions(), transitions))
+
+    @event()
+    def detect_transitions(self):
+        """Find transitions again, keeping any holding something entered by hand."""
+        self._redetect = True
+
+    def _transitions(self) -> list[Transition]:
+        computed = self.data.get("computed") or {}
+        return [Transition.from_dict(t) for t in computed.get("transitions", [])]
+
+    def _store_transitions(self, transitions: list[Transition], detected_for: str | None = None):
+        computed = dict(self.data.get("computed") or {})
+        computed["transitions"] = [t.to_dict() for t in transitions]
+        curie = [t.temperature for t in transitions if t.kind == CURIE]
+        if curie:
+            computed["curie_temperature"] = curie[0]
+        else:
+            computed.pop("curie_temperature", None)
+        if detected_for is not None:
+            computed["transitions_detected_for"] = detected_for
+        self.data["computed"] = computed
+
+    def _update_transitions(self, df, metadata, detected_for: str):
+        """Find transitions in a file plotted for the first time, or on request."""
+        computed = self.data.get("computed") or {}
+        redetect = getattr(self, "_redetect", False)
+        if computed.get("transitions_detected_for") == detected_for and not redetect:
+            return
+        detected = find_transitions(
+            df, mentions_curie(metadata.sample_name, metadata.method, metadata.comment)
+        )
+        existing = self._transitions() if redetect else []
+        self._store_transitions(merge_detected(existing, detected), detected_for=detected_for)
+        self._redetect = False
+
     def _plot_function(self, file_path=None, link_plots=True):
         return self.generate_insitu_tga_plot(file_path=file_path, link_plots=link_plots)
 
     def process_and_store_data(self, file_path: str | Path):
         """Parse the export, derive plotting columns, and subsample its rows."""
-        df = parse_sta_ascii(file_path)
+        df, metadata = parse_thermal_file(file_path)
+        self.data["metadata"] = metadata.to_dict()
+        # Found at full resolution, before the rows are subsampled.
+        self._update_transitions(
+            df, metadata, detected_for=str(self.data.get("file_id") or Path(file_path).name)
+        )
 
         m0 = self.data.get("m0")
         if m0 in (None, ""):
@@ -97,7 +166,10 @@ class TGAInsituBlock(DataBlock):
         return df.iloc[::data_granularity]
 
     def generate_insitu_tga_plot(self, file_path: Path | None = None, link_plots: bool = True):
-        """Generate linked mass and heat-flow panels for an ASCII export."""
+        """Generate linked mass and heat-flow panels for an ASCII export.
+
+        The heat-flow panel is left out for files without heat flow.
+        """
         if not file_path:
             if "file_id" not in self.data:
                 return
@@ -118,15 +190,11 @@ class TGAInsituBlock(DataBlock):
 
         df = self.process_and_store_data(file_path)
 
-        for key in ("sample_name", "export_timestamp"):
-            if key in df.attrs:
-                self.data[key] = df.attrs[key]
-
         layout = create_linked_tga_plots(
             df,
-            x_options=X_OPTIONS,
-            mass_y_options=MASS_Y_OPTIONS,
-            heat_y_options=HEAT_Y_OPTIONS,
+            x_options=available_options(df, X_OPTIONS),
+            mass_y_options=available_options(df, MASS_Y_OPTIONS),
+            heat_y_options=available_options(df, HEAT_Y_OPTIONS),
             x_default="t (min)",
             parameters={
                 "m0": {
@@ -138,6 +206,11 @@ class TGAInsituBlock(DataBlock):
                 }
             },
             link_plots=link_plots,
+            transitions=self._transitions(),
+            dispatch=(
+                "document.dispatchEvent(new CustomEvent('block-event', "
+                f"{{detail: Object.assign({{block_id: '{self.block_id}'}}, detail), bubbles: true}}));"
+            ),
         )
 
         try:
