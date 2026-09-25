@@ -69,10 +69,20 @@ More info on plugin development can be found at: https://docs.datalab-org.io/en/
 
 ## Input format
 
-Upload the instrument's `.txt` ASCII export directly. It must contain two
-header rows (column names and units), followed by the six whitespace-aligned
-columns `Index`, `Ts`, `t`, `HF`, `Weight`, and `Tr`. An optional final line can
-contain the sample name and export timestamp.
+Upload the instrument's `.txt` ASCII export directly. Two formats are
+recognised:
+
+- Simultaneous TGA/DSC exports, with two header rows (column names and units)
+  followed by the six whitespace-aligned columns `Index`, `Ts`, `t`, `HF`,
+  `Weight`, and `Tr`. An optional final line can contain the sample name and
+  export timestamp.
+- TGA exports from TA Instruments' Universal Analysis, which start with a
+  header of `Key<tab>value` lines (`Sample`, `Size`, `Nsig`, `Sig1`, ...)
+  before the data.
+
+Whatever metadata the file has (sample name, mass, operator, date, gases, and
+so on) is stored with the block. Files without heat flow, like the TA TGA
+exports, are shown as a single mass panel.
 
 The block displays linked mass and heat-flow plots. Axes are switched by
 clicking their labels: elapsed time or sample/reference temperature for the
