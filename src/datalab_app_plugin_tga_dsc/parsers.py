@@ -9,7 +9,7 @@ that the rest of the plugin need not know which instrument a file came from:
 - ``Tr``: reference or programme temperature (°C)
 - ``HF``: heat flow (mW)
 - ``Weight``: balance signal (mg)
-- ``dW/dT``: the instrument's own derivative of weight (%/°C)
+- ``dW/dT``: the instrument's own derivative of weight (%/°C), negative for a loss
 
 A file need not have all of them, but it must at least have ``t`` and ``Weight``.
 """
@@ -47,7 +47,8 @@ TA_SIGNALS = {
     "Time (s)": ("t", 1.0),
     "Temperature (°C)": ("Ts", 1.0),
     "Weight (mg)": ("Weight", 1.0),
-    "Deriv. Weight (%/°C)": ("dW/dT", 1.0),
+    # Universal Analysis counts weight loss as positive; flip it to match our DTG.
+    "Deriv. Weight (%/°C)": ("dW/dT", -1.0),
     "Heat Flow (mW)": ("HF", 1.0),
 }
 """Universal Analysis signal names, mapped to a shared column name and the factor

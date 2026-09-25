@@ -74,7 +74,9 @@ def test_parse_ta_universal_ascii():
     assert df["Ts"].iloc[0] == pytest.approx(599.780)
     assert df["t"].iloc[-1] == pytest.approx(12.4588 * 60)
     assert df["Weight"].iloc[-1] == pytest.approx(15.5839)
-    assert df["dW/dT"].iloc[0] == pytest.approx(-6.402e-3)
+    # Universal Analysis counts a loss as positive; the parser flips it.
+    assert df["dW/dT"].iloc[0] == pytest.approx(6.402e-3)
+    assert df["dW/dT"].min() < -0.3
 
 
 def test_parse_ta_universal_ascii_metadata():
