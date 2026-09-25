@@ -1,10 +1,17 @@
 """A common metadata model for thermal analysis files from different instruments."""
 
+import json
 from datetime import datetime
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+import pydantic
+from pydantic import BaseModel, Field
 
 __all__ = ("ThermalAnalysisMetadata",)
+
+PYDANTIC_V1 = pydantic.VERSION.startswith("1.")
+"""Released versions of datalab-server still use pydantic 1, the development
+version uses pydantic 2; the model supports both."""
 
 
 class ThermalAnalysisMetadata(BaseModel):
@@ -15,7 +22,13 @@ class ThermalAnalysisMetadata(BaseModel):
     version of the name the instrument gave it.
     """
 
-    model_config = ConfigDict(extra="allow")
+    if PYDANTIC_V1:
+
+        class Config:
+            extra = "allow"
+
+    else:
+        model_config = pydantic.ConfigDict(extra="allow")
 
     file_format: str = Field(description="The parser that read the file.")
     original_filename: str | None = None
@@ -32,3 +45,10 @@ class ThermalAnalysisMetadata(BaseModel):
         default_factory=list,
         description="The recorded signals, named (with units) as the instrument names them.",
     )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return the metadata as JSON-compatible values, extras included and
+        unset fields left out."""
+        if PYDANTIC_V1:
+            return json.loads(self.json(exclude_none=True))
+        return self.model_dump(mode="json", exclude_none=True)

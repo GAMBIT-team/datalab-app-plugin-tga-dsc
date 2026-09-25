@@ -96,7 +96,7 @@ def test_parse_ta_universal_ascii_metadata():
     ]
 
     # Everything else in the header is kept as extra fields.
-    extras = metadata.model_dump()
+    extras = metadata.to_dict()
     assert extras["status"] == "CLOSED"
     assert extras["pan"] == "Alumina"
     assert extras["gas1"] == "Argon 100mL/min"

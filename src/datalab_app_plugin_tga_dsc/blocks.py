@@ -78,7 +78,7 @@ class TGAInsituBlock(DataBlock):
     def process_and_store_data(self, file_path: str | Path):
         """Parse the export, derive plotting columns, and subsample its rows."""
         df, metadata = parse_thermal_file(file_path)
-        self.data["metadata"] = metadata.model_dump(mode="json", exclude_none=True)
+        self.data["metadata"] = metadata.to_dict()
 
         m0 = self.data.get("m0")
         if m0 in (None, ""):
