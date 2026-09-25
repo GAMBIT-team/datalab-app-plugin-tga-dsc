@@ -7,13 +7,14 @@ import bokeh.embed
 from pydatalab.blocks.base import DataBlock, event, generate_js_callback_single_float_parameter
 
 from datalab_app_plugin_tga_dsc._version import __version__
+from datalab_app_plugin_tga_dsc.parsers import parse_thermal_file
 from datalab_app_plugin_tga_dsc.plotting import create_linked_tga_plots
 from datalab_app_plugin_tga_dsc.utils import (
     HEAT_Y_OPTIONS,
     MASS_Y_OPTIONS,
     X_OPTIONS,
     add_derived_columns,
-    parse_sta_ascii,
+    available_options,
 )
 
 
@@ -21,9 +22,10 @@ class TGAInsituBlock(DataBlock):
     """Process simultaneous thermal analysis (TGA/DSC) data.
 
     The block reads a single ASCII export recorded continuously through a
-    temperature programme. The file is expected to have two header rows
-    (column names, then units), six data columns, and an optional footer giving
-    the sample name and export timestamp.
+    temperature programme. Two formats are supported: exports from a
+    simultaneous TGA/DSC, and TGA exports from TA Instruments' Universal
+    Analysis. Files without heat flow are shown as a single mass panel. Any
+    metadata in the file is stored with the block.
 
     Mass is normalised against an initial mass, which defaults to the first
     balance reading and can be overridden in the plot. No baseline or buoyancy
@@ -75,7 +77,8 @@ class TGAInsituBlock(DataBlock):
 
     def process_and_store_data(self, file_path: str | Path):
         """Parse the export, derive plotting columns, and subsample its rows."""
-        df = parse_sta_ascii(file_path)
+        df, metadata = parse_thermal_file(file_path)
+        self.data["metadata"] = metadata.model_dump(mode="json", exclude_none=True)
 
         m0 = self.data.get("m0")
         if m0 in (None, ""):
@@ -97,7 +100,10 @@ class TGAInsituBlock(DataBlock):
         return df.iloc[::data_granularity]
 
     def generate_insitu_tga_plot(self, file_path: Path | None = None, link_plots: bool = True):
-        """Generate linked mass and heat-flow panels for an ASCII export."""
+        """Generate linked mass and heat-flow panels for an ASCII export.
+
+        The heat-flow panel is left out for files without heat flow.
+        """
         if not file_path:
             if "file_id" not in self.data:
                 return
@@ -118,15 +124,11 @@ class TGAInsituBlock(DataBlock):
 
         df = self.process_and_store_data(file_path)
 
-        for key in ("sample_name", "export_timestamp"):
-            if key in df.attrs:
-                self.data[key] = df.attrs[key]
-
         layout = create_linked_tga_plots(
             df,
-            x_options=X_OPTIONS,
-            mass_y_options=MASS_Y_OPTIONS,
-            heat_y_options=HEAT_Y_OPTIONS,
+            x_options=available_options(df, X_OPTIONS),
+            mass_y_options=available_options(df, MASS_Y_OPTIONS),
+            heat_y_options=available_options(df, HEAT_Y_OPTIONS),
             x_default="t (min)",
             parameters={
                 "m0": {
