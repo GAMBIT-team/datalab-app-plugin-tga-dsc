@@ -2,7 +2,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from bokeh.models import CustomJS, GlyphRenderer, LinearAxis
+from bokeh.models import CustomJS, DataTable, GlyphRenderer, LinearAxis
 
 from datalab_app_plugin_tga_dsc import TGAInsituBlock, __version__
 from datalab_app_plugin_tga_dsc.parsers import parse_sta_ascii, parse_ta_universal_ascii
@@ -235,3 +235,114 @@ def test_no_heat_flow_x_menu_drives_every_trace(curie_df):
         for renderer in model.args["x_renderers"]
     }
     assert driven == {id(renderer) for renderer in _renderers(layout)}
+
+
+def test_block_detects_transitions_into_computed():
+    block = TGAInsituBlock(item_id="test-tga-insitu")
+    block.generate_insitu_tga_plot(file_path=CURIE_FILE)
+
+    computed = block.data["computed"]
+    (transition,) = computed["transitions"]
+    assert transition["kind"] == "Curie"
+    assert transition["source"] == "auto"
+    assert computed["curie_temperature"] == pytest.approx(772.7, abs=0.1)
+
+
+def test_block_transition_edits_survive_replotting():
+    block = TGAInsituBlock(item_id="test-tga-insitu")
+    block.generate_insitu_tga_plot(file_path=CURIE_FILE)
+    (curie,) = block.data["computed"]["transitions"]
+
+    block.process_events(
+        {
+            "event_name": "set_transitions",
+            "block_id": block.block_id,
+            "transitions": [
+                {"id": curie["id"], "temperature": 770.0, "kind": "Curie", "comment": "moved"},
+                {"temperature": 650.0, "kind": "other", "comment": "added by hand"},
+            ],
+        }
+    )
+    assert "errors" not in block.data
+    block.generate_insitu_tga_plot(file_path=CURIE_FILE)
+
+    transitions = block.data["computed"]["transitions"]
+    assert [(t["temperature"], t["source"]) for t in transitions] == [
+        (650.0, "manual"),
+        (770.0, "manual"),
+    ]
+    assert block.data["computed"]["curie_temperature"] == 770.0
+
+
+def test_block_unmarking_curie_clears_curie_temperature():
+    block = TGAInsituBlock(item_id="test-tga-insitu")
+    block.generate_insitu_tga_plot(file_path=CURIE_FILE)
+    (curie,) = block.data["computed"]["transitions"]
+
+    block.set_transitions([{**curie, "kind": "decomposition"}])
+    assert "curie_temperature" not in block.data["computed"]
+
+
+def test_block_detect_again_keeps_edits():
+    block = TGAInsituBlock(item_id="test-tga-insitu")
+    block.generate_insitu_tga_plot(file_path=EXAMPLE_FILE)
+    first, *rest = block.data["computed"]["transitions"]
+
+    block.set_transitions([{**first, "comment": "keep me"}])
+    assert len(block.data["computed"]["transitions"]) == 1
+
+    block.detect_transitions()
+    block.generate_insitu_tga_plot(file_path=EXAMPLE_FILE)
+    transitions = block.data["computed"]["transitions"]
+    assert len(transitions) == len(rest) + 1
+    assert [t["comment"] for t in transitions if t["id"] == first["id"]] == ["keep me"]
+
+
+def test_block_redetects_for_a_new_file():
+    block = TGAInsituBlock(item_id="test-tga-insitu")
+    block.generate_insitu_tga_plot(file_path=CURIE_FILE)
+    block.generate_insitu_tga_plot(file_path=EXAMPLE_FILE)
+
+    computed = block.data["computed"]
+    assert computed["transitions_detected_for"] == EXAMPLE_FILE.name
+    assert "curie_temperature" not in computed
+    assert all(t["kind"] == "" for t in computed["transitions"])
+
+
+def _transitions(df):
+    from datalab_app_plugin_tga_dsc.transitions import detect_transitions
+
+    return detect_transitions(df, mentions_curie_point=True)
+
+
+def test_transition_markers_follow_the_axis_menus(derived_df):
+    transitions = _transitions(derived_df)
+    layout = create_linked_tga_plots(
+        derived_df, *_options(derived_df), transitions=transitions, dispatch="void detail;"
+    )
+
+    renderers = _renderers(layout)
+    # Each panel gets a marker and a label on top of its traces.
+    assert len(renderers) == 3 + 4
+    driven = {
+        id(renderer)
+        for model in layout.references()
+        if isinstance(model, CustomJS) and "x_renderers" in model.args
+        for renderer in model.args["x_renderers"]
+    }
+    assert driven == {id(renderer) for renderer in renderers}
+
+
+def test_transition_editor_needs_dispatch(curie_df):
+    transitions = _transitions(curie_df)
+    options = _options(curie_df)
+
+    with_editor = create_linked_tga_plots(
+        curie_df, *options, transitions=transitions, dispatch="void detail;"
+    )
+    without = create_linked_tga_plots(curie_df, *options, transitions=transitions)
+
+    assert any(isinstance(model, DataTable) for model in with_editor.references())
+    assert not any(isinstance(model, DataTable) for model in without.references())
+    # The markers are still drawn without the editor.
+    assert len(_renderers(without)) == 2 + 2
