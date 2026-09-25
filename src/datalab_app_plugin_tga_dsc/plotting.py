@@ -21,6 +21,14 @@ from bokeh.models import (
 )
 from bokeh.plotting import figure
 
+from datalab_app_plugin_tga_dsc.transition_plotting import (
+    TEMPERATURE_COLUMN,
+    add_transition_markers,
+    transition_editor,
+    transition_marker_source,
+)
+from datalab_app_plugin_tga_dsc.transitions import Transition
+
 __all__ = ("AxisMenu", "attach_axis_menus", "create_linked_tga_plots")
 
 TOOLS = "pan, box_zoom, wheel_zoom, reset, save"
@@ -91,6 +99,14 @@ _AXIS_MENU_LIBRARY = """
       return target.secondary && label === OFF_LABEL ? OFF_OPTION : label;
     }
 
+    // Renderers may draw from sources other than the traces' (the transition
+    // markers do), and each needs a nudge to redraw with its new field.
+    function redraw(renderers) {
+      for (const source of new Set(renderers.map((renderer) => renderer.data_source))) {
+        source.change.emit();
+      }
+    }
+
     function apply(target, option) {
       if (target.secondary) {
         apply_secondary(target, option);
@@ -102,7 +118,7 @@ _AXIS_MENU_LIBRARY = """
       for (const axis of target.axes) {
         axis.axis_label = option + MARKER;
       }
-      target.source.change.emit();
+      redraw(target.renderers);
     }
 
     // The secondary trace can also be switched off. Off, its axis keeps a muted
@@ -131,7 +147,7 @@ _AXIS_MENU_LIBRARY = """
       if (target.hover != null) {
         target.hover.renderers = off ? target.hover_off : target.hover_on;
       }
-      target.source.change.emit();
+      redraw(target.renderers);
     }
 
     function open(target, at) {
@@ -465,6 +481,8 @@ def create_linked_tga_plots(
     secondary_y_default: str | None = None,
     parameters: dict[str, dict[str, Any]] | None = None,
     link_plots: bool = True,
+    transitions: Sequence[Transition] | None = None,
+    dispatch: str | None = None,
 ):
     """Build two vertically stacked line panels that share an x-axis.
 
@@ -480,6 +498,11 @@ def create_linked_tga_plots(
     It offers every mass and heat-flow option, is off unless
     ``secondary_y_default`` names a column, and is switched on and off from its
     own axis label.
+
+    ``transitions`` are marked on the plot, heat-flow peaks on the lower panel
+    and everything else on the upper. Given ``dispatch``, JS that sends the
+    object ``detail`` as a block event, a table for editing them is added below.
+    Both need a temperature column among the x options.
     """
     x_default = x_default or x_options[0]
     mass_y_default = mass_y_default or mass_y_options[0]
@@ -555,6 +578,31 @@ def create_linked_tga_plots(
     if heat_figure is not None:
         panels.append((heat_figure, [heat_line]))
 
+    # Transition markers follow the axis menus like the traces do, so their
+    # sources carry every column the menus can pick.
+    show_transitions = transitions is not None and TEMPERATURE_COLUMN in x_options
+    marker_sources: list[ColumnDataSource] = []
+    markers: dict[Any, list[GlyphRenderer]] = {mass_figure: [], heat_figure: []}
+    if show_transitions:
+        all_transitions = list(transitions or ())
+        placed = [(mass_figure, mass_y_default, all_transitions)]
+        if heat_figure is not None and heat_y_default is not None:
+            on_heat_panel = [t for t in all_transitions if t.signal == "heat flow"]
+            placed = [
+                (
+                    mass_figure,
+                    mass_y_default,
+                    [t for t in all_transitions if t not in on_heat_panel],
+                ),
+                (heat_figure, heat_y_default, on_heat_panel),
+            ]
+        for fig, y_field, panel_transitions in placed:
+            if not panel_transitions:
+                continue
+            marker_source = transition_marker_source(df, panel_transitions, plotted)
+            marker_sources.append(marker_source)
+            markers[fig] = add_transition_markers(fig, marker_source, x_default, y_field)
+
     hover_tools = {}
     for fig, renderers in panels:
         hover_tools[fig] = HoverTool(
@@ -578,7 +626,8 @@ def create_linked_tga_plots(
     labelled_x_figure = heat_figure if heat_figure is not None else mass_figure
     shared_x: AxisMenu = {
         "options": x_options,
-        "renderers": [renderer for _, renderers in panels for renderer in renderers] + [mass_line2],
+        "renderers": [renderer for _, renderers in panels for renderer in renderers]
+        + [mass_line2, *markers[mass_figure], *markers[heat_figure]],
         "axes": [labelled_x_figure.xaxis[0]],
     }
     attach_axis_menus(
@@ -587,7 +636,7 @@ def create_linked_tga_plots(
         x=shared_x,
         y={
             "options": mass_y_options,
-            "renderers": [mass_line],
+            "renderers": [mass_line, *markers[mass_figure]],
             "axes": [mass_figure.yaxis[0]],
             "color": MASS_COLOR,
         },
@@ -606,7 +655,7 @@ def create_linked_tga_plots(
             x=shared_x,
             y={
                 "options": heat_y_options,
-                "renderers": [heat_line],
+                "renderers": [heat_line, *markers[heat_figure]],
                 "axes": [heat_figure.yaxis[0]],
             },
         )
@@ -621,8 +670,22 @@ def create_linked_tga_plots(
 
     grid = gridplot([[fig] for fig, _ in panels], merge_tools=True, sizing_mode="scale_width")
 
+    below = []
+    if show_transitions and dispatch is not None:
+        below.append(
+            transition_editor(
+                transitions or (),
+                source,
+                [fig for fig, _ in panels],
+                mass_line,
+                marker_sources,
+                dispatch,
+            )
+        )
+
     return column(
         *widgets,
         grid,
+        *below,
         sizing_mode="scale_width",
     )
