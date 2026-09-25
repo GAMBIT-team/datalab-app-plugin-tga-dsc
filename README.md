@@ -94,6 +94,22 @@ option, is off until picked from that axis label, and the two labels are tinted
 to match their traces while it is on. The initial mass used
 for normalisation can be edited on the plot.
 
+### Transitions
+
+When a file is first plotted, the block looks for transitions on heating: steps
+in the mass (placed at their inflection point) and peaks in the heat flow
+(placed at their top). Each is marked on the plot and listed in a table below
+it, where it can be given a kind (Curie, melting, decomposition, dehydration,
+...) and a free-text comment, or have its temperature changed. Transitions can
+also be deleted, added by clicking the plot, or detected again; detecting again
+keeps anything that has been edited by hand.
+
+Transitions are stored in the block's `computed` data, along with the
+temperature of any marked as a Curie point as `curie_temperature`. For magnetic
+TGA runs, where a magnet near the pan makes the apparent mass step at the Curie
+point, the largest mass step is marked as a Curie point automatically if the
+sample name, method or comment mentions one.
+
 Mass values are not baseline- or buoyancy-corrected. DTG is calculated from a
 Savitzky–Golay-smoothed mass trace before the data are reduced for display.
 
