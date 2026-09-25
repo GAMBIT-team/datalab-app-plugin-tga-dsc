@@ -469,9 +469,11 @@ def create_linked_tga_plots(
     """Build two vertically stacked line panels that share an x-axis.
 
     The upper panel shows a mass-derived signal and the lower panel a heat-flow
-    signal. Axes are chosen by clicking their labels: clicking either x-axis
-    label drives both x-axes, and clicking a y-axis label changes that panel
-    only.
+    signal. Axes are chosen by clicking their labels: clicking the x-axis label
+    drives both x-axes, and clicking a y-axis label changes that panel only.
+
+    If ``heat_y_options`` is empty, as for a file with no heat flow, the lower
+    panel is left out and the upper panel carries the x-axis instead.
 
     The upper panel also carries a secondary y-axis on the right, for showing a
     second trace alongside the first (mass and DTG, say, or mass and heat flow).
@@ -481,7 +483,7 @@ def create_linked_tga_plots(
     """
     x_default = x_default or x_options[0]
     mass_y_default = mass_y_default or mass_y_options[0]
-    heat_y_default = heat_y_default or heat_y_options[0]
+    has_heat = bool(heat_y_options)
     # The secondary trace may come from either panel's options.
     secondary_y_options = list(dict.fromkeys([*mass_y_options, *heat_y_options]))
     if secondary_y_default is not None and secondary_y_default not in secondary_y_options:
@@ -494,29 +496,34 @@ def create_linked_tga_plots(
 
     source = ColumnDataSource(df[plotted])
 
-    # The upper panel shares the lower panel's x-axis, so it is left unlabelled
-    # and only the lower x-axis carries the label (and its menu).
+    # With a lower panel, the upper panel shares its x-axis, so it is left
+    # unlabelled and only the lower x-axis carries the label (and its menu).
+    x_axis_label = x_default + AXIS_MENU_MARKER
     mass_figure = figure(
         sizing_mode="scale_width",
         aspect_ratio=2.5,
         tools=TOOLS,
+        x_axis_label=None if has_heat else x_axis_label,
         y_axis_label=mass_y_default + AXIS_MENU_MARKER,
     )
-    heat_figure = figure(
-        sizing_mode="scale_width",
-        aspect_ratio=2.5,
-        tools=TOOLS,
-        x_axis_label=x_default + AXIS_MENU_MARKER,
-        y_axis_label=heat_y_default + AXIS_MENU_MARKER,
-        x_range=mass_figure.x_range,
-    )
-
     mass_line = mass_figure.line(
         x=x_default, y=mass_y_default, source=source, line_width=2, color=MASS_COLOR
     )
-    heat_line = heat_figure.line(
-        x=x_default, y=heat_y_default, source=source, line_width=2, color=HEAT_COLOR
-    )
+
+    heat_figure = heat_line = None
+    if has_heat:
+        heat_y_default = heat_y_default or heat_y_options[0]
+        heat_figure = figure(
+            sizing_mode="scale_width",
+            aspect_ratio=2.5,
+            tools=TOOLS,
+            x_axis_label=x_axis_label,
+            y_axis_label=heat_y_default + AXIS_MENU_MARKER,
+            x_range=mass_figure.x_range,
+        )
+        heat_line = heat_figure.line(
+            x=x_default, y=heat_y_default, source=source, line_width=2, color=HEAT_COLOR
+        )
 
     # The secondary trace on the upper panel, with its own range and right-hand
     # axis. The range follows this trace alone, rather than everything drawn.
@@ -544,8 +551,12 @@ def create_linked_tga_plots(
     mass_figure.add_layout(secondary_axis, "right")
     _style_secondary_axis(secondary_axis, mass_figure.yaxis[0], active=secondary_active)
 
+    panels = [(mass_figure, [mass_line])]
+    if heat_figure is not None:
+        panels.append((heat_figure, [heat_line]))
+
     hover_tools = {}
-    for fig, renderers in ((mass_figure, [mass_line]), (heat_figure, [heat_line])):
+    for fig, renderers in panels:
         hover_tools[fig] = HoverTool(
             renderers=[*renderers, mass_line2]
             if secondary_active and fig is mass_figure
@@ -556,7 +567,7 @@ def create_linked_tga_plots(
         fig.add_tools(hover_tools[fig])
         fig.js_on_event(DoubleTap, CustomJS(args=dict(p=fig), code="p.reset.emit()"))
 
-    if link_plots:
+    if link_plots and heat_figure is not None:
         crosshair = CrosshairTool(dimensions="height", line_color="grey")
         mass_figure.add_tools(crosshair)
         heat_figure.add_tools(crosshair)
@@ -564,10 +575,11 @@ def create_linked_tga_plots(
     # Both x-axes are driven together, but only the labelled one is relabelled.
     # Every trace follows it, the secondary one included, or it would be left
     # plotted against whichever column the x-axis held when it was last shown.
+    labelled_x_figure = heat_figure if heat_figure is not None else mass_figure
     shared_x: AxisMenu = {
         "options": x_options,
-        "renderers": [mass_line, mass_line2, heat_line],
-        "axes": [heat_figure.xaxis[0]],
+        "renderers": [renderer for _, renderers in panels for renderer in renderers] + [mass_line2],
+        "axes": [labelled_x_figure.xaxis[0]],
     }
     attach_axis_menus(
         mass_figure,
@@ -587,12 +599,17 @@ def create_linked_tga_plots(
         },
         hover=hover_tools[mass_figure],
     )
-    attach_axis_menus(
-        heat_figure,
-        source,
-        x=shared_x,
-        y={"options": heat_y_options, "renderers": [heat_line], "axes": [heat_figure.yaxis[0]]},
-    )
+    if heat_figure is not None:
+        attach_axis_menus(
+            heat_figure,
+            source,
+            x=shared_x,
+            y={
+                "options": heat_y_options,
+                "renderers": [heat_line],
+                "axes": [heat_figure.yaxis[0]],
+            },
+        )
 
     widgets = []
     if parameters:
@@ -602,7 +619,7 @@ def create_linked_tga_plots(
                 widget.js_on_change("value", CustomJS(code=parameter["event"]))
             widgets.append(widget)
 
-    grid = gridplot([[mass_figure], [heat_figure]], merge_tools=True, sizing_mode="scale_width")
+    grid = gridplot([[fig] for fig, _ in panels], merge_tools=True, sizing_mode="scale_width")
 
     return column(
         *widgets,
